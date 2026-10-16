@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+ui_test.py — автоматический тест интерфейса «Распознаватель» в headless-Chromium.
+
+Подменяет Python-API заглушкой (window.pywebview.api), кликает ВСЕ кнопки,
+проверяет реакции интерфейса и ловит любые JS-ошибки. Скриншоты сохраняются
+в /tmp/ui_shots/ для визуальной проверки.
+"""
+import json
+import sys
+import time
+
+from playwright.sync_api import sync_playwright
+
+PAGE = "http://127.0.0.1:8765/ui/index.html"
+SHOTS = "/tmp/ui_shots"
+
+# локальный HTTP-сервер (headless-браузер не любит file://)
+import http.server
+import threading
+import os
+os.makedirs(SHOTS, exist_ok=True)
+# ВАЖНО: путь вычисляем от __file__ (абсолютные /home/... в файлах не работают в песочнице)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(PROJECT_ROOT)   # отдаём ui/ относительно корня проекта
+_httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 8765), http.server.SimpleHTTPRequestHandler)
+threading.Thread(target=_httpd.serve_forever, daemon=True).start()
+
+MOCK_JS = r"""
+window.__calls = [];
+window.__errors = [];
+window.addEventListener('error', e => window.__errors.push('error: ' + e.message));
+window.addEventListener('unhandledrejection', e => window.__errors.push('reject: ' + e.reason));
+
+const TINY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+const responses = {
+  get_info: {name:'Распознаватель', version:'2.2.0', frozen:true, data_dir:'C:/Raspoznavatel/Raspoznavatel_data', screenshots_dir:'C:/Raspoznavatel/Screenshots'},
+  get_settings: {ocr_langs:'auto', auto_copy:true, smart_hotkey:true, hotkey_recognize:'ctrl+shift+s', hotkey_screenshot:'ctrl+shift+p', autostart:false, preload:true},
+  save_settings: (args) => Object.assign({ok: true}, args[0]),
+  get_available_langs: [{code:'rus',name:'Русский'},{code:'eng',name:'Английский'},{code:'deu',name:'Немецкий'}],
+  pick_image: {ok:true, path:'C:/test/img.png', name:'img.png', base64:TINY_PNG},
+  save_dropped_file: {ok:true, path:'C:/tmp/drop.png', name:'drop.png', base64:TINY_PNG},
+  ocr_image: {ok:true, text:'Hello world. Проверка OCR.', lang:'eng', confidence:95.5, words:4, detected:'eng'},
+  decode_image: {ok:true, count:2, results:[{type:'QRCode', text:'https://example.com/привет', engine:'zxing-cpp'},{type:'EAN-13', text:'4600000000005', engine:'zxing-cpp'}]},
+  capture_smart: {ok:true, mode:'ocr', shot:{base64:TINY_PNG, width:300, height:120}, text:'Текст с экрана распознан', lang:'rus', confidence:91.2, detected:'rus'},
+  capture_and_ocr: {ok:true, mode:'ocr', shot:{base64:TINY_PNG, width:300, height:120}, text:'Текст с экрана', lang:'rus', confidence:90, detected:'rus'},
+  capture_screenshot: {ok:true, path:'C:/Raspoznavatel/Screenshots/Скриншот_2026-10-16_12-00-00.png', width:400, height:200, base64:TINY_PNG},
+  translate_text: {ok:true, translated:'Привет, мир. Проверка перевода.'},
+  copy_to_clipboard: {ok:true},
+  get_log: '[12:00:00] [INFO] тестовая строка 1\n[12:00:01] [OK] тестовая строка 2',
+  clear_log: {ok:true},
+  check_components: {
+    ocr:{ok:true, version:'5.4.0', langs:['rus','eng','deu'], error:null},
+    qr:{'zxing-cpp':true,'pyzbar (ZBar)':true,'opencv':true, ok:true},
+    screen:true, clipboard:true, tray:true,
+    translator:{ok:true, library:true, models:['translate-en_ru-1_9.argosmodel'], error:null}
+  },
+  get_autostart: {enabled:false, path:'C:/Users/test/AppData/.../Startup/Raspoznavatel.lnk'},
+  preload_translator: {ok:true},
+  open_data_dir: {ok:true, path:'C:/data'},
+  open_screenshots_dir: {ok:true, path:'C:/shots'},
+  win_minimize: {ok:true, via:'win32'},
+  win_maximize_toggle: {ok:true, maximized:true, via:'win32'},
+  win_close: {ok:true},
+  win_resize: {ok:true},
+  js_log: {ok:true},
+  js_error: {ok:true},
+};
+
+window.pywebview = {
+  api: new Proxy({}, {
+    get(target, prop) {
+      return async function(...args) {
+        window.__calls.push({m: String(prop), args: args.map(a => { try { return typeof a === 'object' ? JSON.stringify(a).slice(0,300) : String(a).slice(0,80); } catch(e) { return String(a); } })});
+        const r = responses[prop];
+        if (r === undefined) throw new Error('mock: неизвестный метод ' + String(prop));
+        return typeof r === 'function' ? r(args) : JSON.parse(JSON.stringify(r));
+      };
+    }
+  })
+};
+"""
+
+results = []
+def check(name, cond, extra=""):
+    results.append((name, bool(cond), extra))
+    print(("✓" if cond else "✗"), name, extra if not cond else "")
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    page = browser.new_page(viewport={"width": 1280, "height": 860})
+    page.add_init_script(MOCK_JS)
+    page.goto(PAGE)
+    page.wait_for_timeout(2200)  # onReady + анимации
+
+    def calls(method):
+        return page.evaluate(f"window.__calls.filter(c => c.m === '{method}').length")
+
+    # --- 1. Кнопки панели заголовка ---
+    page.click("#btnMin"); page.wait_for_timeout(300)
+    check("кнопка «свернуть» вызывает win_minimize", calls("win_minimize") == 1)
+    page.click("#btnMax"); page.wait_for_timeout(300)
+    check("кнопка «развернуть» вызывает win_maximize_toggle", calls("win_maximize_toggle") == 1)
+
+    # --- 2. Загрузка изображения ---
+    page.click("#pickBtn"); page.wait_for_timeout(600)
+    check("«Загрузить изображение» → pick_image", calls("pick_image") == 1)
+    check("превью появилось", page.is_visible("#previewCard"))
+
+    # --- 3. Распознать текст / QR ---
+    page.click("#runOcrBtn"); page.wait_for_timeout(1400)
+    check("«Распознать текст» → ocr_image", calls("ocr_image") == 1)
+    val = page.input_value("#mainOutput")
+    check("текст OCR появился в поле (typewriter)", "Hello world" in val, val[:40])
+    page.click("#runQrBtn"); page.wait_for_timeout(1200)
+    check("«Найти QR» → decode_image", calls("decode_image") == 1)
+    check("карточки QR видны", page.is_visible("#qrResults"))
+    qr_texts = page.inner_text("#qrResults")
+    check("QR-текст отображён", "example.com" in qr_texts, qr_texts[:50])
+
+    # --- 4. Копирование / перевод ---
+    page.click("#copyBtn"); page.wait_for_timeout(300)
+    check("«Копировать» → copy_to_clipboard", calls("copy_to_clipboard") >= 1)
+    page.click("#translateBtn"); page.wait_for_timeout(1200)
+    check("«Перевести» → translate_text", calls("translate_text") == 1)
+    tr = page.input_value("#trOutput")
+    check("перевод появился", "перевода" in tr, tr[:40])
+
+    # --- 5. Экран и скриншоты ---
+    page.click("#screenBtn"); page.wait_for_timeout(1400)
+    check("«Распознать с экрана» → capture_smart", calls("capture_smart") == 1)
+    page.click("#shotBtn"); page.wait_for_timeout(800)
+    check("«Скриншот области» → capture_screenshot(False)", calls("capture_screenshot") == 1)
+    page.click("#shotAsBtn"); page.wait_for_timeout(800)
+    check("«Сохранить как…» → capture_screenshot(True)", calls("capture_screenshot") == 2)
+
+    # --- 6. Настройки: drawer, журнал, диагностика ---
+    page.click("#settingsBtn"); page.wait_for_timeout(700)
+    check("панель настроек открылась", page.evaluate("document.querySelector('#settingsDrawer').classList.contains('open')"))
+    logv = page.input_value("#logBox")
+    check("журнал загружен в поле", "тестовая строка" in logv, logv[:40])
+    page.click("#copyLogBtn"); page.wait_for_timeout(300)
+    check("«Копировать журнал» → copy_to_clipboard", calls("copy_to_clipboard") >= 2)
+    page.click("#checkBtn"); page.wait_for_timeout(800)
+    diag = page.inner_text("#diagResult")
+    check("диагностика отрисована", "Перевод" in diag and "Иконка" in diag, diag[:80])
+    page.screenshot(path=f"{SHOTS}/drawer.png")
+
+    # --- 7. Запись горячей клавиши ---
+    page.click("#hkRecBtn"); page.wait_for_timeout(200)
+    page.keyboard.press("F5"); page.wait_for_timeout(300)
+    check("одиночная клавиша (F5) НЕ записывается — ждём комбинацию",
+          page.input_value("#hkRecognize") == "", page.input_value("#hkRecognize"))
+    page.keyboard.down("Control"); page.keyboard.press("F9"); page.keyboard.up("Control")
+    page.wait_for_timeout(600)
+    hk = page.input_value("#hkRecognize")
+    check("комбинация записана и красиво отображена (Ctrl + F9)", hk == "Ctrl + F9", hk)
+    saved = page.evaluate("window.__calls.filter(c=>c.m==='save_settings').slice(-1)[0].args[0]")
+    check("в save_settings ушло сырое значение ctrl+f9", "ctrl+f9" in saved, saved[:80])
+    stat = page.inner_text("#statusHotkeys")
+    check("строка статуса обновилась (Ctrl + F9)", "Ctrl + F9" in stat, stat[:80])
+
+    # --- 8. Автозапуск ---
+    page.click("label:has(#setAutostart)"); page.wait_for_timeout(400)
+    check("автозапуск → save_settings с autostart=true",
+          "true" in page.evaluate("window.__calls.filter(c=>c.m==='save_settings').slice(-1)[0].args[0]").lower())
+
+    # --- 9. Переключатели поведения ---
+    page.click("label:has(#setAutoCopy)"); page.wait_for_timeout(300)
+    check("переключатель auto_copy сработал", calls("save_settings") >= 3)
+
+    page.click("#drawerClose"); page.wait_for_timeout(500)
+    check("панель настроек закрылась", not page.evaluate("document.querySelector('#settingsDrawer').classList.contains('open')"))
+
+    # --- 10. Очистка результата ---
+    page.click("#clearBtn"); page.wait_for_timeout(300)
+    check("«Очистить» очищает поле", page.input_value("#mainOutput") == "")
+
+    # --- 11. JS-ошибки за всё время ---
+    errs = page.evaluate("window.__errors")
+    check("нет JS-ошибок", len(errs) == 0, json.dumps(errs, ensure_ascii=False)[:300])
+
+    # --- 12. Скриншоты интерфейса ---
+    page.screenshot(path=f"{SHOTS}/main.png")
+    page.click("#btnClose"); page.wait_for_timeout(300)
+    check("крестик вызывает win_close", calls("win_close") == 1)
+
+    browser.close()
+
+ok = sum(1 for _, c, _ in results if c)
+print(f"\nИТОГ: {ok}/{len(results)} проверок пройдено")
+sys.exit(0 if ok == len(results) else 1)

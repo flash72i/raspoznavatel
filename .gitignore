@@ -1,0 +1,31 @@
+# — Артефакты сборки (пересоздаются build.bat) —
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+node_modules/
+dist/
+build/
+
+# — Секреты (никогда не должны попасть в репозиторий) —
+.env
+.env.*
+*.secret
+*.pem
+*.key
+*.tsv
+.registry.tsv
+.DS_Store
+
+# — Рабочие данные программы (создаются при запуске) —
+Raspoznavatel_data/
+Screenshots/
+
+# — Модель перевода EN→RU (195 МБ) превышает лимит GitHub 100 МБ на файл.
+# Это НЕ исходник: она автоматически скачивается перед сборкой —
+# шаг [3/6] в build.bat или:  python tools/download_resources.py
+resources/argos/*.argosmodel
+
+# — Установщик Tesseract (если был скачан скриптом подготовки ресурсов) —
+tools/tesseract-ocr-w64-setup.exe
