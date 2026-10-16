@@ -167,7 +167,7 @@ def run(window, api):
 
         # --- 4. журнал долетел до интерфейса ---
         got_log = poll(lambda: int(js(
-            "(function(){ return document.querySelector('#logBox').value.length; })()"
+            "(function(){ return document.querySelector('#logBox').textContent.length; })()"
         ) or 0) > 0, 20)
         rep.add("буфер журнала доставлен в интерфейс (#logBox)", got_log)
 
@@ -202,6 +202,12 @@ def run(window, api):
         except OSError:
             pass
         rep.add("ошибка из JS записана в журнал и в файл app.log", logged and in_file, probe)
+
+        # --- 6б. ошибки подсвечены красным в панели журнала ---
+        red = poll(lambda: int(js(
+            "(function(){ return document.querySelectorAll('#logBox .log-err').length; })()"
+        ) or 0) >= 1, 15)
+        rep.add("ошибки отображаются КРАСНЫМ в журнале (.log-err)", red)
 
         # --- 7. горячие клавиши: валидация через мост ---
         cur = js_async("settings", "window.pywebview.api.get_settings()") or {}

@@ -338,11 +338,18 @@ body { display: flex; flex-direction: column; }
 .diag-note { color: var(--text-dim); font-size: 10.5px; margin-left: auto; text-align: right; max-width: 55%; }
 
 /* Журнал */
-.log-box { width: 100%; height: 190px; resize: vertical; border-radius: 10px; padding: 10px 12px;
+.log-box { width: 100%; height: 190px; overflow-y: auto; border-radius: 10px; padding: 10px 12px;
   background: rgba(6, 10, 22, .8); border: 1px solid var(--stroke); color: #b9c4e8;
   font-family: 'Consolas', 'Courier New', monospace; font-size: 11px; line-height: 1.5;
   outline: none; user-select: text; white-space: pre-wrap; word-break: break-word; }
-.log-box:focus { border-color: rgba(34,211,238,.45); box-shadow: 0 0 10px rgba(34,211,238,.15); }
+.log-box:focus, .log-box:focus-within { border-color: rgba(34,211,238,.45); box-shadow: 0 0 10px rgba(34,211,238,.15); }
+.log-line { padding: 1px 4px; border-radius: 4px; }
+.log-line + .log-line { margin-top: 1px; }
+.log-info { color: #b9c4e8; }
+.log-ok   { color: #4ade80; }
+.log-warn { color: #fbbf24; }
+.log-err  { color: #ff5d6c; background: rgba(255, 77, 106, .10); font-weight: 600; }
+.log-empty { color: var(--text-dim); font-style: italic; }
 
 .about-mini p { font-size: 11.5px; color: var(--text-dim); line-height: 1.55; }
 .about-mini b { color: var(--text); }

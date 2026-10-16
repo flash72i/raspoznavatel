@@ -94,19 +94,36 @@ function hideLoader() {
 /* Колбэки из Python */
 window.onStatus = (t) => setStatus(t);
 window.onError = (t) => { toast(t, "error", 6000); setStatus("Ошибка: " + t, "error"); };
-window.onLogEntry = (line) => {
+
+/* --- цветной журнал: ERROR — красный, WARN — жёлтый, OK — зелёный --- */
+function logLevelOf(line) {
+  if (line.indexOf("[ERROR]") >= 0) return "err";
+  if (line.indexOf("[WARN]") >= 0) return "warn";
+  if (line.indexOf("[OK]") >= 0) return "ok";
+  return "info";
+}
+function appendLogLines(lines) {
   const box = $("#logBox");
-  box.value += (box.value ? "\n" : "") + line;
+  const empty = $("#logEmpty");
+  if (empty) empty.remove();
+  const frag = document.createDocumentFragment();
+  for (const ln of lines) {
+    if (!ln) continue;
+    const d = document.createElement("div");
+    d.className = "log-line log-" + logLevelOf(ln);
+    d.textContent = ln;
+    frag.appendChild(d);
+  }
+  box.appendChild(frag);
   if ($("#settingsDrawer").classList.contains("open")) box.scrollTop = box.scrollHeight;
-};
+}
+function logBoxText() {
+  return Array.from(document.querySelectorAll("#logBox .log-line"))
+    .map((d) => d.textContent).join("\n");
+}
+window.onLogEntry = (line) => appendLogLines([line]);
 /* Пакетная доставка строк журнала, накопленных до загрузки страницы */
-window.onLogBulk = (lines) => {
-  const box = $("#logBox");
-  const add = (Array.isArray(lines) ? lines : [lines]).join("\n");
-  if (!add) return;
-  box.value += (box.value ? "\n" : "") + add;
-  if ($("#settingsDrawer").classList.contains("open")) box.scrollTop = box.scrollHeight;
-};
+window.onLogBulk = (lines) => appendLogLines(Array.isArray(lines) ? lines : [lines]);
 
 /* ---------------------------------------------------------------------------
    Typewriter (React Bits)
@@ -475,7 +492,13 @@ function initDrawer() {
 }
 
 async function refreshLog() {
-  try { $("#logBox").value = await callApi("get_log"); $("#logBox").scrollTop = 1e9; } catch (e) {}
+  try {
+    const text = await callApi("get_log");
+    const box = $("#logBox");
+    box.innerHTML = "";
+    appendLogLines(String(text || "").split("\n"));
+    box.scrollTop = 1e9;
+  } catch (e) {}
 }
 
 async function pushSettings() {
@@ -628,9 +651,9 @@ function initSettings() {
     await pushSettings();   // Python создаст/удалит ярлык в папке «Автозагрузка»
   });
 
-  $("#copyLogBtn").addEventListener("click", () => copyText($("#logBox").value, "Журнал"));
+  $("#copyLogBtn").addEventListener("click", () => copyText(logBoxText(), "Журнал"));
   $("#clearLogBtn").addEventListener("click", async () => {
-    try { await callApi("clear_log"); $("#logBox").value = ""; toast("Журнал очищен", "success"); } catch (e) {}
+    try { await callApi("clear_log"); $("#logBox").innerHTML = ""; toast("Журнал очищен", "success"); } catch (e) {}
   });
   $("#openShotsBtn").addEventListener("click", () => callApi("open_screenshots_dir").catch(() => {}));
   $("#openDataBtn").addEventListener("click", () => callApi("open_data_dir").catch(() => {}));
