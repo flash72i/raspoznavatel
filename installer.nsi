@@ -1,34 +1,43 @@
 ﻿; installer.nsi — установщик «Распознаватель» (NSIS 3, Unicode)
 ; Сборка:  makensis installer.nsi   (или build_installer.sh)
-; Результат: dist/Raspoznavatel-2.4.0-Setup.exe
+; Результат: dist/Raspoznavatel-2.5.0-Setup.exe
 Unicode true
+
+; --- оформление: ВАЖНО — все MUI_* директивы должны быть ОБЪЯВЛЕНЫ ДО
+;     !include "MUI2.nsh", иначе MUI2 читает их пустыми и установщик
+;     собирается со СТАНДАРТНОЙ иконкой NSIS (баг v2.2.1-v2.4.0: иконка
+;     приложения у Setup.exe не появлялась). ---
+!define MUI_ABORTWARNING
+!define MUI_ICON   "ui\assets\icon.ico"
+!define MUI_UNICON "ui\assets\icon.ico"
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !include "Sections.nsh"
 
 Name "Распознаватель"
-OutFile "dist\Raspoznavatel-2.4.0-Setup.exe"
+OutFile "dist\Raspoznavatel-2.5.0-Setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Raspoznavatel"
 InstallDirRegKey HKCU "Software\Raspoznavatel" "InstallDir"
 RequestExecutionLevel user          ; БЕЗ прав администратора
 SetCompressor /SOLID lzma
 
-; --- метаданные установщика ---
-VIProductVersion "2.4.0.0"
-VIAddVersionKey "ProductName"     "Распознаватель"
-VIAddVersionKey "FileDescription" "Установщик «Распознаватель» 2.4.0"
-VIAddVersionKey "FileVersion"     "2.4.0"
-VIAddVersionKey "ProductVersion"  "2.4.0"
-VIAddVersionKey "LegalCopyright"  "Open source (flash72i)"
-VIAddVersionKey "Comments"        "QR, штрих-коды, OCR, скриншоты, офлайн-перевод EN->RU"
+; иконка самого Setup.exe и Uninstall.exe (дублирует MUI_ICON — гарантия,
+; что файл установщика в проводнике выглядит как приложение)
+Icon "ui\assets\icon.ico"
+UninstallIcon "ui\assets\icon.ico"
 
-; --- оформление ---
-!define MUI_ABORTWARNING
-!define MUI_ICON   "ui\assets\icon.ico"
-!define MUI_UNICON "ui\assets\icon.ico"
+; --- метаданные установщика ---
+VIProductVersion "2.5.0.0"
+VIAddVersionKey "ProductName"     "Распознаватель"
+VIAddVersionKey "FileDescription" "Установщик «Распознаватель» 2.5.0"
+VIAddVersionKey "FileVersion"     "2.5.0"
+VIAddVersionKey "ProductVersion"  "2.5.0"
+VIAddVersionKey "LegalCopyright"  "Open source (flash72i)"
+VIAddVersionKey "Comments"        "QR, штрих-коды, OCR, скриншоты, офлайн-перевод, история"
+
 !define MUI_WELCOMEPAGE_TITLE "Установка программы «Распознаватель»"
-!define MUI_WELCOMEPAGE_TEXT "QR-коды и штрих-коды, текст с картинок и с экрана, офлайн-перевод с английского на русский — всё без интернета, телеметрии и прав администратора.$\r$\n$\r$\nПрограмма будет установлена для текущего пользователя в:$\r$\n$INSTDIR$\r$\n$\r$\nНажмите «Далее», чтобы продолжить."
+!define MUI_WELCOMEPAGE_TEXT "QR-коды и штрих-коды, текст с картинок и с экрана, офлайн-перевод на десятки языков, история распознаваний — всё без интернета, телеметрии и прав администратора.$\r$\n$\r$\nПрограмма будет установлена для текущего пользователя в:$\r$\n$INSTDIR$\r$\n$\r$\nНажмите «Далее», чтобы продолжить."
 !define MUI_FINISHPAGE_RUN "$INSTDIR\Raspoznavatel.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Запустить «Распознаватель»"
 
@@ -56,8 +65,8 @@ Section "Программа (обязательно)" SecMain
 
   ; запись для «Установка и удаление программ» (только HKCU — без админ-прав)
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "DisplayName"     "Распознаватель 2.4.0"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "DisplayVersion"  "2.4.0"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "DisplayName"     "Распознаватель 2.5.0"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "DisplayVersion"  "2.5.0"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "DisplayIcon"     "$INSTDIR\Raspoznavatel.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "Publisher"       "flash72i"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "UninstallString" "$INSTDIR\Uninstall.exe"
@@ -75,7 +84,7 @@ Section /o "Запускать при включении Windows (свёрнут
 SectionEnd
 
 ; описания компонентов
-LangString DESC_MAIN ${LANG_RUSSIAN} "Все файлы программы: интерфейс, движок Tesseract, языковые модели (14 языков), модель офлайн-перевода EN->RU."
+LangString DESC_MAIN ${LANG_RUSSIAN} "Все файлы программы: интерфейс, движок Tesseract, языковые модели OCR (15 языков), модели офлайн-перевода EN<->RU, менеджер языковых пакетов перевода."
 LangString DESC_DESK ${LANG_RUSSIAN} "Создать ярлык «Распознаватель» на рабочем столе."
 LangString DESC_AUTO ${LANG_RUSSIAN} "Программа будет запускаться вместе с Windows и работать свёрнутой в системном трее; горячие клавиши действуют сразу."
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN

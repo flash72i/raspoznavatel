@@ -30,6 +30,7 @@ const state = {
   shotCount: 0,
   recording: null,   // какое поле горячей клавиши сейчас записывается
   pairs: [],         // доступные направления перевода [{src,tgt,label}]
+  trLangs: null,     // v2.5: каталог языков + пакеты (get_translation_langs)
   trFrom: "en",
   trTo: "ru",
 };
@@ -558,19 +559,34 @@ const LANG_LABELS = {
 function langLabel(code) { return LANG_LABELS[code] || String(code).toUpperCase(); }
 
 function fillDirSelects() {
+  // v2.5: исходный язык может быть «Авто» (автоопределение); список языков
+  // строится по установленным пакетам + направлениям из индекса Argos.
   const codes = [];
-  state.pairs.forEach(p => { if (!codes.includes(p.src)) codes.push(p.src); if (!codes.includes(p.tgt)) codes.push(p.tgt); });
-  if (!codes.length) codes.push("en", "ru");
+  const push = (c) => { if (c && !codes.includes(c)) codes.push(c); };
+  push("ru"); push("en");
+  (state.trLangs && state.trLangs.installed || []).forEach(p => { push(p[0]); push(p[1]); });
+  (state.trLangs && state.trLangs.remote || []).forEach(p => { push(p.src); push(p.tgt); });
+  if (!state.trLangs) {
+    state.pairs.forEach(p => { push(p.src); push(p.tgt); });
+  }
+  if (codes.length <= 2) { codes.push("ru", "en"); }
   [["#trFrom", state.trFrom], ["#trTo", state.trTo], ["#trFrom2", state.trFrom], ["#trTo2", state.trTo]]
     .forEach(([sel, val]) => {
       const el = $(sel); if (!el) return;
       el.innerHTML = "";
+      if (sel.indexOf("From") >= 0) {
+        const o = document.createElement("option");
+        o.value = "auto"; o.textContent = "Авто (определять язык)";
+        if (val === "auto") o.selected = true;
+        el.appendChild(o);
+      }
       codes.forEach(c => {
         const o = document.createElement("option");
         o.value = c; o.textContent = langLabel(c);
         if (c === val) o.selected = true;
         el.appendChild(o);
       });
+      if (val === "auto" && sel.indexOf("From") >= 0) el.value = "auto";
     });
 }
 
@@ -602,20 +618,215 @@ async function loadTranslationPairs() {
   fillDirSelects();
 }
 
+/* v2.5: каталог языков + установленные/скачиваемые пакеты (один запрос) */
+async function loadTranslationLangs() {
+  try {
+    const r = await callApi("get_translation_langs");
+    if (r && r.ok) {
+      state.trLangs = r;
+      if (r.catalog) Object.assign(LANG_LABELS, r.catalog);
+    }
+  } catch (e) { /* офлайн без индекса — останутся установленные пакеты */ }
+  fillDirSelects();
+  refreshPacks();
+}
+
+/* Какой пакет нужно скачать для пары (null — перевод уже возможен) */
+function packNeeded(src, tgt) {
+  if (!state.trLangs || src === "auto") return null;
+  const inst = state.trLangs.installed || [];
+  const has = (a, b) => inst.some(p => p[0] === a && p[1] === b);
+  if (has(src, tgt)) return null;
+  if (has(src, "en") && has("en", tgt)) return null;
+  if (has(src, "en")) return ["en", tgt];
+  if (has("en", tgt)) return [src, "en"];
+  const remote = state.trLangs.remote || [];
+  if (remote.some(p => p.src === src && p.tgt === tgt)) return [src, tgt];
+  if (remote.some(p => p.src === src && p.tgt === "en")) return [src, "en"];
+  if (remote.some(p => p.src === "en" && p.tgt === tgt)) return ["en", tgt];
+  return [src, tgt];
+}
+
+function remoteSize(src, tgt) {
+  const r = (state.trLangs && state.trLangs.remote || []).find(p => p.src === src && p.tgt === tgt);
+  return r && r.size ? Math.max(1, Math.round(r.size / 1048576)) : null;
+}
+
+async function ensurePackOrCancel(src, tgt) {
+  const need = packNeeded(src, tgt);
+  if (!need) return true;
+  const [a, b] = need;
+  const mb = remoteSize(a, b);
+  const note = src === "auto" ? "" : "";
+  const msg = `Для перевода ${langLabel(src)} → ${langLabel(tgt)} нужен языковой пакет ` +
+    `${langLabel(a)} → ${langLabel(b)}${mb ? ` (~${mb} МБ)` : ""}.\n` +
+    `Скачать сейчас? Один раз нужен интернет, дальше пакет работает офлайн.${note}`;
+  if (!confirm(msg)) return false;
+  showLoader(`Скачиваю пакет ${langLabel(a)} → ${langLabel(b)}…`);
+  updateProgress(2, "Скачиваю языковой пакет…");
+  try {
+    const r = await callApi("download_translation_pack", a, b);
+    if (!r || !r.ok) { toast((r && r.error) || "Не удалось скачать пакет", "error", 7000); playSound("err"); return false; }
+    toast(`Пакет ${langLabel(a)} → ${langLabel(b)} установлен`, "success");
+    await loadTranslationLangs();
+    return true;
+  } catch (e) { return false; }
+  finally { hideLoader(); }
+}
+
 async function translateCurrent() {
   const t = currentResultText();
   if (!t || !t.trim()) { toast("Сначала распознайте или введите текст", "info"); return; }
-  showLoader(`Перевод ${langLabel(state.trFrom)} → ${langLabel(state.trTo)} (офлайн)…`);
+  const src = state.trFrom, tgt = state.trTo;
+  if (!(await ensurePackOrCancel(src, tgt))) return;
+  showLoader(`Перевод ${src === "auto" ? "авто" : langLabel(src)} → ${langLabel(tgt)} (офлайн)…`);
   updateProgress(3, "Готовлю модель перевода…");
   try {
-    const r = await callApi("translate_text", t, state.trFrom, state.trTo);
+    const r = await callApi("translate_text", t, src, tgt);
     if (!r || !r.ok) { if (r && r.error) { toast(r.error, "error", 7000); playSound("err"); } return; }
     typeIntoTextarea($("#trOutput"), r.translated);
-    toast(`Перевод готов (${langLabel(r.src || state.trFrom)} → ${langLabel(r.tgt || state.trTo)})`, "success");
+    const det = r.detected ? ` (язык: ${langLabel(r.detected)})` : "";
+    const via = r.via ? ` (через ${langLabel(r.via)})` : "";
+    toast(`Перевод готов: ${langLabel(r.src || src)} → ${langLabel(r.tgt || tgt)}${via}${det}`, "success");
     playSound("ok");
     autoCopy(r.translated);
   } catch (e) {}
   finally { hideLoader(); }
+}
+
+/* ---------------------------------------------------------------------------
+   v2.5: ИСТОРИЯ распознаваний
+--------------------------------------------------------------------------- */
+function fmtHistTime(iso) {
+  try {
+    const d = new Date(iso);
+    const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  } catch (e) { return iso || ""; }
+}
+
+function histItemHtml(x) {
+  const isQr = x.kind === "qr";
+  const src = x.source === "screen" ? "с экрана" : x.source === "file" ? "из файла" : "";
+  const meta = [
+    src,
+    x.langs ? String(x.langs).split("+").join("+").toUpperCase() : "",
+    x.confidence != null ? `${x.confidence}%` : "",
+    x.count ? `${x.count} код(а)` : "",
+  ].filter(Boolean).join(" · ");
+  const text = String(x.text || "");
+  const clamped = text.length > 420 ? " clamped" : "";
+  return `<div class="hist-item" data-id="${escapeHtml(x.id)}">
+    <div class="hist-head">
+      <span class="hist-badge ${isQr ? "qr" : "ocr"}">${isQr ? "QR / код" : "Текст"}</span>
+      <span class="hist-src">${escapeHtml(meta)}</span>
+      <span class="hist-time">${escapeHtml(fmtHistTime(x.ts))}</span>
+    </div>
+    <div class="hist-text${clamped}">${escapeHtml(text.slice(0, 420))}</div>
+    <div class="hist-actions">
+      <button class="mini-btn ripple hist-use" data-id="${escapeHtml(x.id)}">Вставить в результат</button>
+      <button class="mini-btn ripple hist-copy" data-id="${escapeHtml(x.id)}">Копировать</button>
+      <button class="mini-btn ripple danger hist-del" data-id="${escapeHtml(x.id)}">Удалить</button>
+    </div>
+  </div>`;
+}
+
+async function refreshHistory() {
+  const box = $("#historyList");
+  const q = ($("#historySearch").value || "").trim();
+  box.innerHTML = '<p class="placeholder">Загружаю…</p>';
+  try {
+    const r = await callApi("get_history", 300, q);
+    const items = (r && r.items) || [];
+    if (!items.length) {
+      box.innerHTML = q
+        ? '<p class="placeholder">Ничего не найдено по запросу.</p>'
+        : '<p class="placeholder">История пуста. Распознайте текст или QR-код — запись появится здесь.</p>';
+      return;
+    }
+    box.innerHTML = items.map(histItemHtml).join("");
+    box.querySelectorAll(".hist-use").forEach(b => b.addEventListener("click", () => {
+      const it = items.find(i => String(i.id) === b.dataset.id);
+      if (!it) return;
+      if (it.kind === "qr") {
+        showQrResult(String(it.text).split("\n").map(t => ({ type: "Из истории", text: t })), "Результат из истории");
+      } else {
+        showTextResult(it.text, "Результат из истории");
+      }
+      closeHistory();
+      toast("Запись подставлена в результат", "success");
+    }));
+    box.querySelectorAll(".hist-copy").forEach(b => b.addEventListener("click", () => {
+      const it = items.find(i => String(i.id) === b.dataset.id);
+      if (it) copyText(it.text, "Текст из истории");
+    }));
+    box.querySelectorAll(".hist-del").forEach(b => b.addEventListener("click", async () => {
+      await callApi("history_delete", b.dataset.id);
+      refreshHistory();
+    }));
+  } catch (e) {
+    box.innerHTML = `<p class="placeholder">Ошибка загрузки истории: ${escapeHtml(e)}</p>`;
+  }
+}
+
+function openHistory() {
+  $("#historyDrawer").classList.add("open");
+  $("#historyDrawer").setAttribute("aria-hidden", "false");
+  $("#historyBackdrop").classList.remove("hidden");
+  refreshHistory();
+}
+function closeHistory() {
+  $("#historyDrawer").classList.remove("open");
+  $("#historyDrawer").setAttribute("aria-hidden", "true");
+  $("#historyBackdrop").classList.add("hidden");
+}
+
+function initHistory() {
+  $("#historyBtn").addEventListener("click", openHistory);
+  $("#historyClose").addEventListener("click", closeHistory);
+  $("#historyBackdrop").addEventListener("click", closeHistory);
+  $("#historyRefresh").addEventListener("click", refreshHistory);
+  let t = null;
+  $("#historySearch").addEventListener("input", () => {
+    clearTimeout(t); t = setTimeout(refreshHistory, 300);
+  });
+  $("#historyClear").addEventListener("click", async () => {
+    if (!confirm("Удалить ВСЮ историю распознаваний? Действие необратимо.")) return;
+    await callApi("history_clear");
+    refreshHistory();
+    toast("История очищена", "success");
+  });
+  addEventListener("keydown", e => {
+    if (e.key === "Escape" && $("#historyDrawer").classList.contains("open")) closeHistory();
+  });
+}
+
+/* ---------------------------------------------------------------------------
+   v2.5: список установленных языковых пакетов (карточка в настройках)
+--------------------------------------------------------------------------- */
+function refreshPacks() {
+  const box = $("#packsList");
+  if (!box) return;
+  const packs = (state.trLangs && state.trLangs.packs) || [];
+  if (!packs.length) {
+    box.innerHTML = '<p class="placeholder">Пакеты перевода не установлены.</p>';
+    return;
+  }
+  box.innerHTML = packs.map(p => {
+    const mb = Math.max(1, Math.round((p.size || 0) / 1048576));
+    return `<div class="pack-row">
+      <span class="pack-tag ${p.bundled ? "" : "user"}">${p.bundled ? "в комплекте" : "скачан"}</span>
+      <span class="pack-name">${escapeHtml(langLabel(p.src))} → ${escapeHtml(langLabel(p.tgt))}</span>
+      <span class="pack-meta">${mb} МБ</span>
+      ${p.bundled ? "" : `<button class="mini-btn ripple danger pack-del" data-src="${escapeHtml(p.src)}" data-tgt="${escapeHtml(p.tgt)}">Удалить</button>`}
+    </div>`;
+  }).join("");
+  box.querySelectorAll(".pack-del").forEach(b => b.addEventListener("click", async () => {
+    if (!confirm(`Удалить пакет ${langLabel(b.dataset.src)} → ${langLabel(b.dataset.tgt)}?`)) return;
+    await callApi("remove_translation_pack", b.dataset.src, b.dataset.tgt);
+    await loadTranslationLangs();
+    toast("Пакет удалён", "success");
+  }));
 }
 
 /* ---------------------------------------------------------------------------
@@ -627,6 +838,7 @@ function initDrawer() {
     d.classList.add("open"); b.classList.remove("hidden"); d.setAttribute("aria-hidden", "false");
     await refreshLog();
     await syncAutostartUI();
+    loadTranslationLangs().catch(() => {});   // v2.5: карточка языковых пакетов
   };
   const close = () => { d.classList.remove("open"); b.classList.add("hidden"); d.setAttribute("aria-hidden", "true"); };
   $("#settingsBtn").addEventListener("click", open);
@@ -918,6 +1130,7 @@ async function onReady() {
   initWindowControls();
   initDropZone();
   initDrawer();
+  initHistory();
   bindButtons();
 
   if (!pyapi()) {
@@ -934,6 +1147,7 @@ async function onReady() {
     updateHotkeysStatus();
     initTranslationDirs();
     await loadTranslationPairs();
+    await loadTranslationLangs();   // v2.5: языки перевода, пакеты, «Авто»
     const info = await callApi("get_info");
     state.info = info;
     $("#versionLabel").textContent = info.version;

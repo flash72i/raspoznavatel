@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ocr.py — офлайн-распознавание текста (OCR) через локальный Tesseract (v2.3).
+ocr.py — офлайн-распознавание текста (OCR) через локальный Tesseract (v2.5).
 
 Поддерживается ЛЮБОЙ язык, для которого в папке resources/tessdata лежит
 файл <код>.traineddata (по умолчанию: русский, английский, китайский,
@@ -8,14 +8,26 @@ ocr.py — офлайн-распознавание текста (OCR) через
 польский, турецкий, нидерландский, чешский, белорусский, казахский).
 Новые языки добавляются простым копированием .traineddata в эту папку.
 
-Режим «авто» (v2.3 — быстрее и точнее на смешанном тексте):
-  1. ТРИ параллельных пробных прогона на уменьшенной копии (rus/eng/chi_sim)
-     вместо последовательного «турнира» из 8-14 прогонов;
-  2. по письменностям и уверенностям выбирается НАБОР языков (1-3),
-     например «rus+eng» для смешанного текста;
-  3. ФИНАЛЬНЫЙ проход выполняется сразу всеми выбранными языками —
-     Tesseract сам разбирает смешанный текст (русский + английский +
-     китайский на одной картинке распознаются вместе, а не «одним языком»).
+Режим «авто»: параллельные пробы языков (rus/eng/chi_sim) → выбор НАБОРА
+языков (1-3) → комбинированный финальный проход.
+
+v2.5.0 — ИСПРАВЛЕНИЕ «русский с экрана распознаётся коряво или не распознаётся»:
+  Раньше выполнялся ОДИН проход с одной предобработкой (Оцу-бинаризация)
+  и одним режимом разметки (--psm 3). Для текста с экрана (антиалиасинг,
+  цветные и ТЁМНЫЕ фоны, мелкий кегль) Оцу нередко «съедал» символы, а
+  psm 3 ошибался на однострочных областях.
+  Теперь перед финальным проходом идёт быстрый ТУРНИР вариантов:
+    plain      — серый, увеличенный (Ланцош) до ≥1400 px: лучший вариант
+                 для экранных снимков с антиалиасингом;
+    otsu       — бинаризация по Оцу: документы и фото с ровным фоном;
+    otsu_inv   — инвертированный Оцу: СВЕТЛЫЙ текст на тёмном фоне
+                 (тёмные темы программ и сайтов — частый случай!);
+    adaptive   — адаптивный порог: неравномерная подсветка, фото с экрана.
+  Каждый вариант прогоняется параллельно (ThreadPool) на копии умеренного
+  размера, побеждает вариант с лучшей средней уверенностью по словам;
+  финальный проход выполняется ПОБЕДИТЕЛЕМ на полном разрешении.
+  Для однострочных/блочных областей дополнительно соревнуются режимы
+  разметки --psm 6 (блок) и --psm 3 (авто).
 """
 
 import os
@@ -72,7 +84,7 @@ DIACRITIC_HINTS = {
     "ita": set("àèìòùÀÈÌÒÙ"),
     "por": set("ãõÃÕ"),
     "pol": set("ąćęłńśźżĄĆĘŁŃŚŹŻ"),
-    "ces": set("ěřůďťňĚŘŮĎŤŇ"),
+    "ces": set("ěřůďťňĚŘŮŤŇ"),
     "tur": set("ğışĞİŞ"),
 }
 # Отличительные символы кириллических языков
@@ -82,9 +94,15 @@ CYRILLIC_HINTS = {
     "kaz": set("әғқңөұүһіӘҒҚҢӨҰҮҺ"),
 }
 
+# --- параметры турнира вариантов (v2.5) -------------------------------------
+TOURNAMENT_MAX_SIDE = 1600    # размер копии для турнира (баланс скорость/точность)
+PROBE_MAX_SIDE = 700          # размер копии для проб языка
+PLAIN_MIN_SIDE = 1400         # до какого размера увеличивать мелкие снимки
+TOURNAMENT_PSM = (6, 3)       # соревнующиеся режимы разметки страницы
+
 
 def available_lang_codes():
-    """Коды языков, доступные по файлам .traineddata."""
+    """Коды языков, доступных по файлам .traineddata."""
     return [l["code"] for l in config.get_available_langs()]
 
 
@@ -115,15 +133,25 @@ def _check_lang_files(lang_str: str):
             )
 
 
-def _load_gray_small(image_path: str, max_side: int = 520):
-    """Загружает уменьшенную копию в градациях серого (для быстрых проб)."""
+def _load_gray(image_path: str):
+    """Полноразмерное изображение в градациях серого (или None)."""
     cv2, np = _get_cv2()
     if cv2 is None:
         return None
     try:
         img = cv2.imdecode(np.fromfile(image_path, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            return None
+        return img
+    except Exception:
+        return None
+
+
+def _load_gray_small(image_path: str, max_side: int = PROBE_MAX_SIDE):
+    """Загружает уменьшенную копию в градациях серого (для быстрых проб)."""
+    img = _load_gray(image_path)
+    if img is None:
+        return None
+    try:
+        cv2, _ = _get_cv2()
         h, w = img.shape[:2]
         m = max(h, w)
         if m > max_side:
@@ -135,7 +163,7 @@ def _load_gray_small(image_path: str, max_side: int = 520):
 
 
 # ---------------------------------------------------------------------------
-# Определение языков (v2.3: параллельные пробы + комбинированный набор)
+# Определение языков (параллельные пробы + комбинированный набор)
 # ---------------------------------------------------------------------------
 
 def _script_counts(text: str) -> dict:
@@ -222,12 +250,33 @@ def choose_langs(probes: dict, available: list) -> list:
     return chosen[:3]
 
 
+def _run_once(img, lang_str: str, psm: int):
+    """
+    Один проход Tesseract по матрице изображения.
+    :return: (text, confidence, words, data)
+    """
+    from PIL import Image
+    pil_img = Image.fromarray(img)
+    data = pytesseract.image_to_data(
+        pil_img, lang=lang_str, output_type=Output.DICT,
+        config=f"--psm {psm} --oem 1 -c preserve_interword_spaces=1"
+    )
+    words = []
+    for t, c in zip(data.get("text", []), data.get("conf", [])):
+        t = str(t or "").strip()
+        if t and float(c) >= 0:
+            words.append((t, float(c)))
+    text = _text_from_data(data)
+    conf = sum(c for _, c in words) / len(words) if words else -1.0
+    return text, conf, len(words), data
+
+
 def _probe_one(pil_img, lang):
     """Один пробный прогон на уменьшенной копии. Возвращает (текст, уверенность)."""
     try:
         data = pytesseract.image_to_data(
             pil_img, lang=lang, output_type=Output.DICT,
-            config="--psm 3 --oem 1"
+            config="--psm 6 --oem 1 -c preserve_interword_spaces=1"
         )
         words = []
         for t, c in zip(data.get("text", []), data.get("conf", [])):
@@ -244,9 +293,10 @@ def _probe_one(pil_img, lang):
 
 def detect_language(image_path: str, progress_cb=None) -> dict:
     """
-    Автоопределение набора языков изображения (v2.3).
-    Три параллельных пробных прогона (rus/eng/chi_sim) на уменьшенной копии
-    → чистая функция choose_langs() → комбинированный набор языков.
+    Автоопределение набора языков изображения.
+    Параллельные пробные прогоны (rus/eng/chi_sim) на УВЕЛИЧЕННОЙ копии
+    (v2.5: 700 px и psm 6 вместо 480 px и psm 3 — мелкий экранный текст
+    перестал «теряться» на этапе определения языка) → choose_langs().
 
     :param progress_cb: необязательный колбэк (pct:int, text:str)
     :return: {'lang': 'rus+eng', 'langs': [...], 'scores': [...], 'tried': N}
@@ -260,7 +310,7 @@ def detect_language(image_path: str, progress_cb=None) -> dict:
         return {"lang": codes[0], "langs": codes[:1], "scores": [(codes[0], 0.0)], "tried": 1}
 
     from PIL import Image
-    small = _load_gray_small(image_path, max_side=480)
+    small = _load_gray_small(image_path, max_side=PROBE_MAX_SIDE)
     pil_img = Image.fromarray(small) if small is not None else Image.open(image_path)
 
     probe_langs = [l for l in PROBE_LANGS if l in codes] or codes[:3]
@@ -289,10 +339,152 @@ def detect_language(image_path: str, progress_cb=None) -> dict:
     return {"lang": "+".join(langs), "langs": langs, "scores": scores, "tried": len(probes)}
 
 
+# ---------------------------------------------------------------------------
+# v2.5: варианты предобработки и турнир между ними
+# ---------------------------------------------------------------------------
+
+def _make_variants(gray):
+    """
+    Словарь вариантов предобработки: имя -> матрица (градации серого).
+    Чистая логика на cv2-матрице — тестируема через _variant_names().
+    """
+    cv2, _ = _get_cv2()
+    variants = {}
+    g = gray
+    h, w = g.shape[:2]
+    if max(h, w) < PLAIN_MIN_SIDE:
+        scale = PLAIN_MIN_SIDE / float(max(h, w))
+        g = cv2.resize(g, None, fx=scale, fy=scale, interpolation=cv2.INTER_LANCZOS4)
+    variants["plain"] = g
+    _, otsu = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    variants["otsu"] = otsu
+    variants["otsu_inv"] = cv2.bitwise_not(otsu)
+    variants["adaptive"] = cv2.adaptiveThreshold(
+        g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, 10)
+    return variants
+
+
+def variant_names():
+    """Имена вариантов предобработки (порядок = приоритет при равенстве очков)."""
+    return ["plain", "otsu", "otsu_inv", "adaptive"]
+
+
+def _downscale(img, max_side: int):
+    cv2, _ = _get_cv2()
+    h, w = img.shape[:2]
+    m = max(h, w)
+    if m > max_side:
+        img = cv2.resize(img, (int(w * max_side / m), int(h * max_side / m)),
+                         interpolation=cv2.INTER_AREA)
+    return img
+
+
+def score_candidate(text: str, conf: float, words: int) -> float:
+    """
+    Оценка кандидата турнира (чистая функция — тестируема).
+    Средняя уверенность слов + небольшой бонус за объём найденного текста;
+    пустые и «однословные галлюцинации» штрафуются.
+    """
+    if words <= 0 or conf < 0:
+        return -1.0
+    t = (text or "").strip()
+    if len(t) < 2:
+        return -1.0
+    score = conf
+    if words >= 3:
+        score += 4.0
+    elif words == 2:
+        score += 2.0
+    if len(t) < 4:
+        score -= 5.0
+    return score
+
+
+def pick_best(candidates: list):
+    """
+    Выбирает победителя турнира (чистая функция — тестируема).
+    :param candidates: [(name, psm, text, conf, words), ...]
+    :return: лучший кандидат или None.
+    """
+    scored = []
+    for cand in candidates:
+        name, psm, text, conf, words = cand
+        s = score_candidate(text, conf, words)
+        # при равенстве очков — приоритет у варианта/psm с меньшим индексом
+        rank = (variant_names().index(name) if name in variant_names() else 99) * 10 + \
+               (TOURNAMENT_PSM.index(psm) if psm in TOURNAMENT_PSM else 99)
+        scored.append((s, -rank, cand))
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    if not scored or scored[0][0] <= -1.0:
+        return None
+    return scored[0][2]
+
+
+def _tournament(gray, lang_str: str, progress_cb=None):
+    """
+    Турнир вариантов предобработки × режимов psm на копии ≤ TOURNAMENT_MAX_SIDE.
+    :return: (winner или None, full_variants, was_full_size)
+             winner = (name, psm, text, conf, words, data)
+    """
+    cv2, _ = _get_cv2()
+
+    def _report(pct, txt):
+        if progress_cb:
+            try:
+                progress_cb(pct, txt)
+            except Exception:
+                pass
+
+    h, w = gray.shape[:2]
+    full_size = max(h, w) <= TOURNAMENT_MAX_SIDE
+    work = gray if full_size else _downscale(gray, TOURNAMENT_MAX_SIDE)
+    variants = _make_variants(work)
+
+    jobs = []
+    for name in variant_names():
+        for psm in TOURNAMENT_PSM:
+            jobs.append((name, psm))
+    # «otsu_inv» и «adaptive» проверяем только с psm 6 — экономим время:
+    jobs = [(n, p) for (n, p) in jobs if not (n in ("otsu_inv", "adaptive") and p == 3)]
+
+    _report(45, f"Подбираю обработку изображения… ({len(jobs)} проб)")
+    results = []
+    with ThreadPoolExecutor(max_workers=min(4, len(jobs))) as ex:
+        futs = {ex.submit(_run_once, variants[name], lang_str, psm): (name, psm)
+                for name, psm in jobs}
+        done = 0
+        for fut in as_completed(futs):
+            name, psm = futs[fut]
+            try:
+                text, conf, words, data = fut.result()
+            except Exception as exc:
+                log.warn(f"Турнир OCR: проба {name}/psm{psm} не удалась: {exc}")
+                text, conf, words, data = "", -1.0, 0, None
+            results.append((name, psm, text, conf, words, data))
+            done += 1
+            _report(45 + int(30 * done / len(futs)),
+                    f"Подбираю обработку… ({done}/{len(futs)})")
+
+    scored = [(r[0], r[1], r[2], r[3], r[4]) for r in results]
+    best = pick_best(scored)
+    winner = None
+    if best:
+        for r in results:
+            if (r[0], r[1]) == (best[0], best[1]):
+                winner = r
+                break
+    if winner:
+        log.info(f"OCR-турнир: победил вариант «{winner[0]}» psm {winner[1]} "
+                 f"(уверенность {round(winner[3], 1)}%, слов {winner[4]})")
+    else:
+        log.warn("OCR-турнир: ни один вариант не дал текста")
+    return winner, variants, full_size
+
+
 def _preprocess(image_path: str) -> str:
     """
-    Лёгкая предобработка для повышения качества OCR: градации серого,
-    увеличение мелких изображений, бинаризация по Оцу.
+    Запасной путь (без cv2 недоступен турнир): лёгкая предобработка —
+    градации серого, увеличение мелких изображений, бинаризация по Оцу.
     Возвращает путь к подготовленному файлу (или исходный путь).
     """
     cv2, np = _get_cv2()
@@ -342,11 +534,16 @@ def ocr_image(image_path: str, langs=None, progress_cb=None) -> dict:
     """
     Распознаёт ВЕСЬ текст на изображении (поддерживает смешанные языки).
 
+    v2.5: перед финальным проходом — турнир вариантов предобработки
+    (plain/otsu/otsu_inv/adaptive × psm 6/3); победитель применяется
+    к полному разрешению (если изображение уже ≤ TOURNAMENT_MAX_SIDE —
+    результат турнира и есть финальный, второй проход не нужен).
+
     :param image_path: путь к файлу изображения
     :param langs: 'auto' — определить автоматически (набор языков),
                   либо список/строку ['rus','eng'] / 'rus+eng'
     :param progress_cb: колбэк (pct:int, text:str) для шкалы прогресса
-    :return: {'text', 'lang', 'confidence', 'words', 'detected'}
+    :return: {'text', 'lang', 'confidence', 'words', 'detected', 'variant'}
     """
     if not PYTESSERACT_AVAILABLE:
         raise OcrError("Компонент OCR (pytesseract) недоступен.")
@@ -370,18 +567,54 @@ def ocr_image(image_path: str, langs=None, progress_cb=None) -> dict:
     _check_lang_files(lang_str)
     log.info(f"OCR: файл «{os.path.basename(image_path)}», языки «{lang_str}»")
 
-    _report(50, f"Распознаю текст ({lang_str.replace('+', ' + ')})…")
-    prepared = _preprocess(image_path)
+    gray = _load_gray(image_path)
+    text = ""
+    confs = []
+    variant_used = "legacy"
     try:
-        from PIL import Image
-        with Image.open(prepared) as im:
-            data = pytesseract.image_to_data(
-                im, lang=lang_str, output_type=Output.DICT,
-                config="--psm 3 --oem 1"
-            )
-            _report(88, "Собираю результат…")
-            # текст собираем из тех же данных — второй запуск tesseract не нужен
-            full = _text_from_data(data)
+        if gray is not None:
+            winner, _variants, full_size = _tournament(gray, lang_str, progress_cb)
+            if winner is None:
+                # ни один вариант не дал текста — честно возвращаем пустоту
+                variant_used = "none"
+                data = None
+            elif full_size:
+                # турнир шёл на полном разрешении — второй проход не нужен
+                _name, _psm, text, _conf, _words, data = winner
+                confs = [float(c) for c, w in zip(data.get("conf", []), data.get("text", []))
+                         if float(c) >= 0 and str(w).strip()]
+                variant_used = f"{winner[0]}+psm{winner[1]}"
+            else:
+                # финальный проход победителем на ПОЛНОМ разрешении
+                _report(80, "Финальное распознавание…")
+                name, psm = winner[0], winner[1]
+                full_variants = _make_variants(gray)
+                text, _conf, _words, data = _run_once(full_variants[name], lang_str, psm)
+                confs = [float(c) for c, w in zip(data.get("conf", []), data.get("text", []))
+                         if float(c) >= 0 and str(w).strip()]
+                variant_used = f"{name}+psm{psm} (полный размер)"
+        else:
+            # OpenCV недоступен — прежний одиночный проход
+            _report(50, f"Распознаю текст ({lang_str.replace('+', ' + ')})…")
+            prepared = _preprocess(image_path)
+            data = None
+            try:
+                from PIL import Image
+                with Image.open(prepared) as im:
+                    data = pytesseract.image_to_data(
+                        im, lang=lang_str, output_type=Output.DICT,
+                        config="--psm 3 --oem 1 -c preserve_interword_spaces=1"
+                    )
+                text = _text_from_data(data)
+            finally:
+                if prepared != image_path and os.path.isfile(prepared):
+                    try:
+                        os.remove(prepared)
+                    except OSError:
+                        pass
+            if data is not None:
+                confs = [float(c) for c, w in zip(data.get("conf", []), data.get("text", []))
+                         if float(c) >= 0 and str(w).strip()]
     except pytesseract.TesseractNotFoundError as exc:
         raise OcrError(
             "Не найден движок Tesseract-OCR (папка App/resources/tesseract)."
@@ -390,33 +623,20 @@ def ocr_image(image_path: str, langs=None, progress_cb=None) -> dict:
         raise
     except Exception as exc:
         raise OcrError(f"Сбой распознавания текста: {exc}") from exc
-    finally:
-        if prepared != image_path and os.path.isfile(prepared):
-            try:
-                os.remove(prepared)
-            except OSError:
-                pass
 
-    text = re.sub(r"[ \t]+\n", "\n", (full or "").strip())
-
-    confs = []
-    try:
-        for c, w in zip(data.get("conf", []), data.get("text", [])):
-            c = float(c)
-            if c >= 0 and str(w).strip():
-                confs.append(c)
-    except Exception:
-        pass
+    text = re.sub(r"[ \t]+\n", "\n", (text or "").strip())
     confidence = round(sum(confs) / len(confs), 1) if confs else None
 
     _report(100, "")
-    log.ok(f"OCR завершён: {len(text)} симв., уверенность {confidence}%, языки {lang_str}")
+    log.ok(f"OCR завершён: {len(text)} симв., уверенность {confidence}%, "
+           f"языки {lang_str}, вариант {variant_used}")
     return {
         "text": text,
         "lang": lang_str,
         "confidence": confidence,
         "words": len(confs),
         "detected": detected,
+        "variant": variant_used,
     }
 
 

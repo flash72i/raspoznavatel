@@ -177,6 +177,7 @@ class Api:
         self._tray = None                    # иконка в трее (создаётся из main)
         self._busy = False
         self._preload_started = False   # прогрев перевода запускается один раз
+        self._history_lock = threading.Lock()   # история распознаваний (v2.5)
         self._zoom_win = None           # отдельное окно-лупа для картинки
         self._settings = self._load_settings()
         if window is not None:
@@ -854,6 +855,8 @@ class Api:
                 texts = "; ".join(r["text"][:60] for r in codes["results"])
                 log.ok(f"Авто: найдено кодов {codes['count']} — {texts}")
                 self._status(f"Найдено кодов: {codes['count']}.")
+                self._history_add("qr", "\n".join(r["text"] for r in codes["results"]),
+                                  {"source": "file", "count": codes["count"]})
                 return {"ok": True, "mode": "qr",
                         "count": codes["count"], "results": codes["results"]}
             self._progress(12, "Кодов нет — распознаю текст…")
@@ -864,6 +867,10 @@ class Api:
             result = ocr.ocr_image(path, self._settings.get("ocr_langs"), progress_cb=cb)
             self._progress(100, "")
             n = len(result.get("text", "").strip())
+            if n:
+                self._history_add("ocr", result.get("text", ""), {
+                    "source": "file", "langs": result.get("lang"),
+                    "confidence": result.get("confidence")})
             if n == 0:
                 log.warn("Авто: текст на изображении не найден")
                 self._status("Текст на изображении не найден.")
@@ -962,6 +969,10 @@ class Api:
 
             result = ocr.ocr_image(shot["path"], self._settings.get("ocr_langs"), progress_cb=cb)
             self._progress(100, "")
+            if (result.get("text") or "").strip():
+                self._history_add("ocr", result.get("text", ""), {
+                    "source": "screen", "langs": result.get("lang"),
+                    "confidence": result.get("confidence")})
             return {"ok": True, "mode": "ocr", "shot": self._shot_info(shot), **result}
         finally:
             self._busy = False
@@ -982,6 +993,9 @@ class Api:
             self._progress(30, "Ищу QR и штрих-коды…")
             result = qr_reader.decode_image(shot["path"])
             self._progress(100, "")
+            if result.get("count", 0) > 0:
+                self._history_add("qr", "\n".join(r["text"] for r in result["results"]),
+                                  {"source": "screen", "count": result["count"]})
             return {"ok": True, "mode": "qr", "shot": self._shot_info(shot), **result}
         finally:
             self._busy = False
@@ -1005,6 +1019,8 @@ class Api:
             if codes.get("count", 0) > 0:
                 self._progress(100, "")
                 log.ok(f"Умный режим: найден QR ({codes['count']} шт.)")
+                self._history_add("qr", "\n".join(r["text"] for r in codes["results"]),
+                                  {"source": "screen", "count": codes["count"]})
                 return {"ok": True, "mode": "qr", "shot": shot_info, **codes}
             self._progress(20, "Кодов нет — распознаю текст…")
 
@@ -1013,6 +1029,10 @@ class Api:
 
             text = ocr.ocr_image(shot["path"], self._settings.get("ocr_langs"), progress_cb=cb)
             self._progress(100, "")
+            if (text.get("text") or "").strip():
+                self._history_add("ocr", text.get("text", ""), {
+                    "source": "screen", "langs": text.get("lang"),
+                    "confidence": text.get("confidence")})
             return {"ok": True, "mode": "ocr", "shot": shot_info, **text}
         finally:
             self._busy = False
@@ -1117,6 +1137,171 @@ class Api:
         return {"ok": True, "path": d}
 
     # ------------------------------------------------------------------
+    # v2.5: ИСТОРИЯ распознаваний (кнопка «История» на панели инструментов)
+    # ------------------------------------------------------------------
+
+    def _history_load(self) -> list:
+        try:
+            if os.path.isfile(config.HISTORY_FILE):
+                with open(config.HISTORY_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    return [x for x in data if isinstance(x, dict)]
+        except Exception as exc:
+            log.warn(f"Не удалось прочитать историю ({exc}) — начинаю пустую")
+        return []
+
+    def _history_save(self, items: list):
+        try:
+            with open(config.HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(items, f, ensure_ascii=False)
+        except OSError as exc:
+            log.error(f"Не удалось сохранить историю: {exc}")
+
+    def _history_add(self, kind: str, text: str, meta: dict = None):
+        """
+        Добавляет запись в историю распознаваний (новейшие сверху,
+        не больше config.HISTORY_MAX_ITEMS). Пустой текст не пишется.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        item = {
+            "id": f"{int(time.time() * 1000)}-{os.getpid() % 1000:03d}-"
+                  f"{len(text) % 97:02d}",
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "kind": kind,                 # ocr | qr
+            "text": text[:20000],
+        }
+        item.update(meta or {})
+        with self._history_lock:
+            items = self._history_load()
+            items.insert(0, item)
+            self._history_save(items[:config.HISTORY_MAX_ITEMS])
+        log.info(f"История: добавлена запись ({kind}, {len(text)} симв.)")
+
+    @safe_call
+    def get_history(self, limit: int = 200, query: str = "") -> dict:
+        q = (query or "").strip().lower()
+        items = self._history_load()
+        if q:
+            items = [x for x in items if q in (x.get("text") or "").lower()]
+        return {"ok": True, "items": items[:int(limit or 200)],
+                "total": len(self._history_load())}
+
+    @safe_call
+    def history_delete(self, item_id: str) -> dict:
+        with self._history_lock:
+            items = self._history_load()
+            before = len(items)
+            items = [x for x in items if str(x.get("id")) != str(item_id)]
+            if len(items) == before:
+                return {"ok": False, "error": "Запись не найдена."}
+            self._history_save(items)
+        return {"ok": True}
+
+    @safe_call
+    def history_clear(self) -> dict:
+        with self._history_lock:
+            self._history_save([])
+        log.ok("История распознаваний очищена")
+        return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # v2.5: языковые пакеты перевода («как Яндекс Переводчик»)
+    # ------------------------------------------------------------------
+
+    @safe_call
+    def get_translation_langs(self) -> dict:
+        """
+        Каталог языков перевода + установленные пакеты + доступные для
+        скачивания направления (индекс Argos, кэш 7 дней).
+        """
+        packs = translator.installed_packs()
+        installed = [(p["src"], p["tgt"]) for p in packs]
+        remote = []
+        try:
+            for p in translator.remote_packages():
+                remote.append({"src": p["src"], "tgt": p["tgt"], "size": p["size"]})
+        except Exception as exc:
+            log.warn(f"Индекс языковых пакетов недоступен: {exc}")
+        return {
+            "ok": True,
+            "catalog": translator.LANGUAGE_CATALOG,
+            "packs": packs,
+            "installed": installed,
+            "remote": remote,
+        }
+
+    @safe_call
+    def download_translation_pack(self, src: str, tgt: str) -> dict:
+        """Скачивает языковой пакет (нужен интернет один раз)."""
+        src = (src or "").lower().strip()
+        tgt = (tgt or "").lower().strip()
+        self._status(f"Скачиваю языковой пакет {src.upper()}→{tgt.upper()}…")
+
+        def cb(pct, txt):
+            self._progress(int(pct), txt)
+
+        res = translator.download_pair(src, tgt, progress_cb=cb)
+        self._progress(100, "")
+        if res.get("ok"):
+            log.ok(f"Языковой пакет {src}→{tgt} установлен "
+                   f"({res['size'] // (1024 * 1024)} МБ)")
+            self._status(f"Пакет {src.upper()}→{tgt.upper()} установлен.")
+        else:
+            log.error(f"Пакет {src}→{tgt} не скачан: {res.get('error')}")
+        return res
+
+    @safe_call
+    def remove_translation_pack(self, src: str, tgt: str) -> dict:
+        res = translator.remove_pair((src or "").lower(), (tgt or "").lower())
+        if res.get("ok"):
+            log.ok(f"Языковой пакет {src}→{tgt} удалён")
+        return res
+
+    # ------------------------------------------------------------------
+    # v2.5: стили окна — возврат кнопки «свернуть» (клик по панели задач)
+    # ------------------------------------------------------------------
+
+    def _fix_window_styles(self):
+        """
+        Безрамочное окно pywebview создаётся БЕЗ стиля WS_MINIMIZEBOX,
+        поэтому клик по кнопке приложения на панели задач Windows только
+        РАЗВОРАЧИВАЛ окно, но не сворачивал активное. Возвращаем стили
+        WS_MINIMIZEBOX|WS_MAXIMIZEBOX — панель задач работает штатно:
+        клик сворачивает активное окно и разворачивает свёрнутое.
+        """
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            hwnd = self._get_hwnd()
+            if not hwnd:
+                return
+            user32 = ctypes.windll.user32
+            user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+            user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+            GWL_STYLE = -16
+            WS_MAXIMIZEBOX = 0x00010000
+            WS_MINIMIZEBOX = 0x00020000
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOZORDER = 0x0004
+            SWP_FRAMECHANGED = 0x0020
+            style = user32.GetWindowLongPtrW(hwnd, GWL_STYLE)
+            if style & WS_MINIMIZEBOX:
+                return
+            user32.SetWindowLongPtrW(hwnd, GWL_STYLE,
+                                     style | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+            user32.SetWindowPos(hwnd, None, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+            log.ok("Окно: включён стиль сворачивания — клик по панели задач "
+                   "теперь сворачивает окно")
+        except Exception as exc:
+            log.warn(f"Не удалось включить стиль сворачивания: {exc}")
+
+    # ------------------------------------------------------------------
     # Перевод (v2.3: выбор направления «с какого на какой»)
     # ------------------------------------------------------------------
 
@@ -1137,15 +1322,19 @@ class Api:
             return {"translated": "", "ok": False, "error": "Пустой текст для перевода."}
         src = (src or "en").strip().lower()
         tgt = (tgt or "ru").strip().lower()
-        self._status(f"Перевод {src.upper()} → {tgt.upper()} (офлайн, первая загрузка модели ~30 с)…")
+        label = "авто" if src == "auto" else src.upper()
+        self._status(f"Перевод {label} → {tgt.upper()} (офлайн)…")
 
         def cb(pct, txt):
-            self._progress(int(pct), txt or f"Перевод {src.upper()} → {tgt.upper()}…")
+            self._progress(int(pct), txt or f"Перевод {label} → {tgt.upper()}…")
 
         result = translator.translate(text, src, tgt, progress_cb=cb)
         self._progress(100, "")
         if result.get("ok"):
-            log.ok(f"Перевод {src}→{tgt} готов ({len(result['translated'])} симв.)")
+            via = f" (через {result['via']})" if result.get("via") else ""
+            det = f" (язык: {result['detected']})" if result.get("detected") else ""
+            log.ok(f"Перевод {result.get('src')}→{tgt} готов "
+                   f"({len(result['translated'])} симв.){via}{det}")
             self._status("Перевод завершён.")
         return result
 
@@ -1161,8 +1350,13 @@ class Api:
         self._preload_started = True
 
         def worker():
-            log.info("Фоновый прогрев модели перевода…")
-            if translator.init_model():
+            pairs = translator.available_pairs()
+            first = ("en", "ru") if ("en", "ru") in pairs else (pairs[0] if pairs else None)
+            if not first:
+                log.warn("Модели перевода не установлены — прогрев не нужен")
+                return
+            log.info(f"Фоновый прогрев модели перевода {first[0]}→{first[1]}…")
+            if translator.init_model(first[0], first[1]):
                 log.ok("Модель перевода готова к работе")
             else:
                 log.warn("Модель перевода не загружена (перевод будет недоступен до устранения)")

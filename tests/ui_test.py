@@ -71,6 +71,18 @@ const responses = {
   open_screenshots_dir: {ok:true, path:'C:/shots'},
   choose_screenshots_dir: {ok:true, path:'C:/MyShots', default:'C:/Raspoznavatel/Screenshots'},
   reset_screenshots_dir: {ok:true, path:'C:/Raspoznavatel/Screenshots', default:'C:/Raspoznavatel/Screenshots'},
+  get_history: (args) => ({ok:true, total:2, items:[
+    {id:'h1', ts:'2026-10-17T12:00:00', kind:'ocr', source:'screen', langs:'rus', confidence:93.1, text:'Текст из истории распознавания'},
+    {id:'h2', ts:'2026-10-17T11:30:00', kind:'qr', source:'file', count:1, text:'https://example.com/qr'}]}),
+  history_delete: {ok:true},
+  history_clear: {ok:true},
+  get_translation_langs: {ok:true,
+    catalog:{en:'Английский', ru:'Русский', de:'Немецкий', fr:'Французский'},
+    packs:[{src:'en',tgt:'ru',size:205258752,bundled:true,path:'x'},{src:'ru',tgt:'en',size:156237824,bundled:true,path:'x'}],
+    installed:[['en','ru'],['ru','en']],
+    remote:[{src:'en',tgt:'de',size:91000000},{src:'de',tgt:'en',size:88000000},{src:'en',tgt:'fr',size:95000000}]},
+  download_translation_pack: {ok:true, path:'x', size:91000000},
+  remove_translation_pack: {ok:true},
   win_minimize: {ok:true, via:'win32'},
   win_maximize_toggle: {ok:true, maximized:true, via:'win32'},
   win_close: {ok:true},
@@ -251,6 +263,36 @@ with sync_playwright() as p:
     # --- 10. Очистка результата ---
     page.click("#clearBtn"); page.wait_for_timeout(300)
     check("«Очистить» очищает поле", page.input_value("#mainOutput") == "")
+
+    # --- 10б. v2.5: история распознаваний ---
+    page.click("#historyBtn"); page.wait_for_timeout(700)
+    check("«История» открывает панель истории",
+          page.evaluate("document.querySelector('#historyDrawer').classList.contains('open')"))
+    check("история отрисована (2 записи)",
+          page.evaluate("document.querySelectorAll('#historyList .hist-item').length") == 2)
+    page.fill("#historySearch", "example"); page.wait_for_timeout(800)
+    check("поиск шлёт запрос в get_history",
+          page.evaluate("window.__calls.filter(c=>c.m==='get_history').slice(-1)[0].args[1]") == "example")
+    page.fill("#historySearch", ""); page.wait_for_timeout(700)
+    page.click("#historyList .hist-use"); page.wait_for_timeout(900)
+    check("«Вставить в результат» подставляет текст",
+          "истории" in page.input_value("#mainOutput"), page.input_value("#mainOutput")[:40])
+    check("панель истории закрылась после вставки",
+          not page.evaluate("document.querySelector('#historyDrawer').classList.contains('open')"))
+    page.click("#historyBtn"); page.wait_for_timeout(500)
+    page.click("#historyList .hist-del"); page.wait_for_timeout(500)
+    check("удаление записи → history_delete", calls("history_delete") == 1)
+    page.click("#historyClose"); page.wait_for_timeout(400)
+    check("панель истории закрылась крестиком",
+          not page.evaluate("document.querySelector('#historyDrawer').classList.contains('open')"))
+
+    # --- 10в. v2.5: языки перевода — «Авто» и скачиваемые пакеты ---
+    check("в исходном языке есть пункт «Авто»",
+          page.evaluate("Array.from(document.querySelector('#trFrom').options).some(o=>o.value==='auto')"))
+    check("в языках перевода доступны скачиваемые (немецкий)",
+          page.evaluate("Array.from(document.querySelector('#trTo').options).some(o=>o.value==='de')"))
+    packs = page.evaluate("document.querySelectorAll('#packsList .pack-row').length")
+    check("список пакетов перевода отрисован (2 встроенных)", packs == 2, str(packs))
 
     # --- 11. JS-ошибки за всё время ---
     errs = page.evaluate("window.__errors")

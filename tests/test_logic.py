@@ -31,6 +31,9 @@ import log     # noqa: E402
 # изолируем настройки и журнал теста от боевых файлов
 config.SETTINGS_FILE = os.path.join(TMP, "settings.json")
 log._log_file = os.path.join(TMP, "app.log")
+config.HISTORY_FILE = os.path.join(TMP, "history.json")       # v2.5: история
+config.USER_MODELS_DIR = os.path.join(TMP, "models", "argos")  # v2.5: пакеты
+config.ARGOS_INDEX_CACHE = os.path.join(TMP, "argos_index.json")
 
 import api as api_mod  # noqa: E402
 
@@ -424,6 +427,105 @@ check("autostart=False → _apply_autostart(False)", applied == [True, False], s
 applied.clear()
 r = a11.save_settings({**a11._settings, "close_action": "tray"})
 check("смена close_action НЕ трогает автозапуск", applied == [] and r.get("ok") is True, str(applied))
+
+print("\n--- 16. v2.5: история распознаваний ---")
+a16, w16 = fresh_api()
+a16.history_clear()   # предыдущие секции тоже пишут в историю (recognize_file)
+a16._history_add("ocr", "Текст один", {"source": "screen", "langs": "rus", "confidence": 90})
+a16._history_add("qr", "https://example.com/qr", {"source": "file", "count": 1})
+a16._history_add("ocr", "   ")   # пустой текст НЕ пишется
+h = a16.get_history()
+check("две записи, новейшие сверху", len(h["items"]) == 2 and h["items"][0]["kind"] == "qr",
+      str([i["kind"] for i in h["items"]]))
+check("мета-поля сохранены (source/langs/confidence)",
+      h["items"][1].get("source") == "screen" and h["items"][1].get("langs") == "rus"
+      and h["items"][1].get("confidence") == 90)
+h2 = a16.get_history(100, "один")
+check("поиск по тексту истории", len(h2["items"]) == 1 and h2["items"][0]["kind"] == "ocr")
+rid = h["items"][0]["id"]
+r = a16.history_delete(rid)
+check("удаление записи по id", r.get("ok") is True and len(a16.get_history()["items"]) == 1)
+r = a16.history_delete("нет-такого")
+check("удаление несуществующей записи — ok=False", r.get("ok") is False)
+a16.history_clear()
+check("очистка истории", len(a16.get_history()["items"]) == 0)
+import json as _json
+for i in range(7):
+    a16._history_add("ocr", f"запись {i}")
+check("история переживает перезапись файла (7 записей)",
+      len(a16.get_history()["items"]) == 7)
+
+print("\n--- 17. v2.5: турнир вариантов OCR (чистые функции) ---")
+import ocr as ocr_mod  # noqa: E402
+check("пустой кандидат отклоняется", ocr_mod.score_candidate("", -1.0, 0) == -1.0)
+check("однобуквенная галлюцинация отклоняется", ocr_mod.score_candidate("x", 95.0, 1) == -1.0)
+check("оценка растёт с уверенностью и объёмом",
+      ocr_mod.score_candidate("Привет мир", 80.0, 2) < ocr_mod.score_candidate("Привет мир друг", 90.0, 3))
+best = ocr_mod.pick_best([
+    ("otsu", 3, "", -1.0, 0),
+    ("plain", 6, "Договор аренды номер 45", 91.0, 4),
+    ("otsu_inv", 6, "ш у м", 30.0, 3),
+])
+check("турнир выбирает уверенный вариант plain/psm6", best is not None and best[0] == "plain" and best[1] == 6,
+      str(best))
+check("турнир из одних пустышек → None",
+      ocr_mod.pick_best([("otsu", 3, "", -1.0, 0), ("plain", 6, "", -1.0, 0)]) is None)
+check("порядок вариантов фиксирован (приоритет plain)",
+      ocr_mod.variant_names() == ["plain", "otsu", "otsu_inv", "adaptive"])
+check("при равенстве очков побеждает приоритетный вариант",
+      ocr_mod.pick_best([("otsu", 6, "Один и тот же текст", 90.0, 5),
+                         ("plain", 6, "Один и тот же текст", 90.0, 5)])[0] == "plain")
+
+print("\n--- 18. v2.5: перевод — автоопределение, транзит, пакеты ---")
+import translator as tr_mod  # noqa: E402
+check("автоопределение: русский", tr_mod.detect_lang("Привет, как дела?") == "ru")
+check("автоопределение: английский", tr_mod.detect_lang("Hello, how are you?") == "en")
+check("автоопределение: украинский", tr_mod.detect_lang("Привіт, як у тебе справи?") == "uk")
+check("автоопределение: немецкий", tr_mod.detect_lang("Hallo, wie geht es dir heute?") == "de")
+check("автоопределение: пустой текст → None", tr_mod.detect_lang("12345") is None)
+_fake_models = [
+    os.path.join(TMP, "translate-en_ru-1_9.argosmodel"),
+    os.path.join(TMP, "translate-ru_en-1_9.argosmodel"),
+    os.path.join(TMP, "translate-en_de-1_9.argosmodel"),
+]
+_orig_find = config.find_argos_models
+config.find_argos_models = lambda: list(_fake_models)
+try:
+    check("пары читаются по именам файлов",
+          tr_mod.available_pairs() == [("en", "ru"), ("ru", "en"), ("en", "de")],
+          str(tr_mod.available_pairs()))
+    check("прямая пара есть → direct", tr_mod.translation_path("en", "ru") == ("direct",))
+    check("нет прямой, но есть цепочка через en → via_en",
+          tr_mod.translation_path("ru", "de") == ("via_en",))
+    check("нет ни прямой, ни цепочки → missing со списком пакетов",
+          tr_mod.translation_path("fr", "ru")[0] == "missing")
+    packs = tr_mod.installed_packs()
+    check("installed_packs: размеры и признак bundled",
+          len(packs) == 3 and all("bundled" in p and "size" in p for p in packs))
+    r = tr_mod.remove_pair("en", "ru")
+    check("встроенный пакет удалить нельзя", r.get("ok") is False)
+    idx = [
+        {"from_code": "en", "to_code": "fr", "links": ["https://x/translate-en_fr-1_0.argosmodel"]},
+        {"from_code": "en", "to_code": "fr", "links": ["https://x/dup.argosmodel"]},
+        {"from_code": "xx", "to_code": "yy", "links": ["https://x/translate-xx_yy-1_0.argosmodel"]},
+        {"from_code": "en", "to_code": "es"},
+    ]
+    rem = tr_mod.remote_packages(index=idx)
+    check("remote_packages: дубли и пары вне каталога отброшены",
+          [ (p["src"], p["tgt"]) for p in rem ] == [("en", "fr")], str(rem))
+finally:
+    config.find_argos_models = _orig_find
+
+print("\n--- 19. v2.5: меню трея (состав пунктов) ---")
+import tray as tray_mod  # noqa: E402
+m_hidden = tray_mod.menu_items(False)
+m_shown = tray_mod.menu_items(True)
+check("меню при спрятанном окне: «Показать окно»", m_hidden[0] == (tray_mod.IDM_TOGGLE, "Показать окно"))
+check("меню при открытом окне: «Скрыть окно»", m_shown[0] == (tray_mod.IDM_TOGGLE, "Скрыть окно"))
+check("в меню есть разделитель и «Выход»",
+      m_hidden[1] == ("sep", None) and m_hidden[2] == (tray_mod.IDM_EXIT, "Выход"))
+check("цвета меню заданы явно (тёмный фон, светлый текст)",
+      tray_mod.MENU_BG != tray_mod.MENU_TEXT and tray_mod.MENU_BG[0] < 128 < tray_mod.MENU_TEXT[0])
 
 print(f"\nИТОГ: {PASS} пройдено, {FAIL} провалено")
 sys.exit(0 if FAIL == 0 else 1)

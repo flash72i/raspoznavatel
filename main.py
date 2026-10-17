@@ -197,10 +197,23 @@ def main():
             except Exception as exc:
                 log.error(f"Не удалось показать окно из трея: {exc}")
 
+        def tray_toggle():
+            """v2.5: клик левой кнопкой по иконке трея — показать, если окно
+            спрятано, и спрятать, если оно открыто."""
+            try:
+                if api._visible:
+                    api.win_hide_to_tray()
+                else:
+                    tray_show()
+            except Exception as exc:
+                log.error(f"Трей: не удалось переключить окно: {exc}")
+
         api._tray = tray.TrayIcon(
             on_show=tray_show,
             on_exit=lambda: window.destroy(),
             tooltip=f"{config.APP_NAME} v{config.APP_VERSION}",
+            on_toggle=tray_toggle,
+            is_visible=lambda: bool(api._visible),
         )
         api._tray.start()
     except Exception as exc:
@@ -216,6 +229,11 @@ def main():
     def started_worker():
         """Всё послестартовое — в фоновом потоке (evaluate_js из GUI-потока = блокировка)."""
         try:
+            # v2.5: вернуть окну стили сворачивания (клик по панели задач)
+            try:
+                api._fix_window_styles()
+            except Exception as exc:
+                log.warn(f"Стили окна: {exc}")
             langs = [l["code"] for l in config.get_available_langs()]
             log.ok(f"Интерфейс загружен. Языков OCR доступно: {len(langs)}")
             register_hotkeys_safe()

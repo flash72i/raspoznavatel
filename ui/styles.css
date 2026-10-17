@@ -523,3 +523,49 @@ body { display: flex; flex-direction: column; }
 .set-select:hover, .set-select:focus { border-color: rgba(34,211,238,.5);
   box-shadow: 0 0 10px rgba(34,211,238,.18); }
 .set-select option { background: #0c1226; color: #dbe4ff; }
+
+/* ================= v2.5.0 — ИСТОРИЯ, ПАКЕТЫ ПЕРЕВОДА ================= */
+
+/* Кнопка «История» (бирюзовая, в одном семействе с остальными btn3d) */
+.btn-teal { background: linear-gradient(180deg, #7ff0d4 0%, #14b8a6 55%, #0f766e 100%);
+  color: #04211c; box-shadow: 0 4px 0 #0a4f49, 0 0 16px rgba(20,184,166,.28), 0 8px 18px rgba(20,184,166,.30); }
+.btn-teal:hover { filter: brightness(1.1); box-shadow: 0 5px 0 #0a4f49, 0 0 22px rgba(45,212,191,.4), 0 11px 22px rgba(20,184,166,.38); }
+
+/* Панель истории — шире настроек, список карточками */
+.history-drawer { width: 560px; }
+.history-tools { display: flex; gap: 8px; align-items: center; padding: 0 16px 10px; }
+.history-search { flex: 1; min-width: 0; padding: 9px 12px; border-radius: 10px;
+  background: rgba(6,10,22,.75); border: 1px solid rgba(120,140,255,.22);
+  color: #dbe4ff; font-size: 12px; font-family: inherit; outline: none;
+  transition: border-color .15s, box-shadow .15s; }
+.history-search:focus { border-color: rgba(45,212,191,.55); box-shadow: 0 0 10px rgba(20,184,166,.2); }
+.history-body { display: block; }
+.mini-btn.danger { border-color: rgba(248,113,113,.45); color: #fca5a5; }
+.mini-btn.danger:hover { background: rgba(248,113,113,.14); }
+
+.hist-item { border: 1px solid rgba(120,140,255,.16); border-radius: 12px;
+  background: rgba(10,15,30,.55); padding: 10px 12px; margin-bottom: 10px;
+  animation: histIn .25s ease both; }
+@keyframes histIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.hist-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.hist-badge { font-size: 9.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px; }
+.hist-badge.ocr { background: rgba(34,211,238,.14); color: #67e8f9; border: 1px solid rgba(34,211,238,.35); }
+.hist-badge.qr  { background: rgba(217,70,239,.14); color: #f0abfc; border: 1px solid rgba(217,70,239,.35); }
+.hist-src { font-size: 9.5px; color: #7c89b8; }
+.hist-time { margin-left: auto; font-size: 10px; color: #7c89b8; font-family: 'Consolas', monospace; }
+.hist-text { font-size: 12px; line-height: 1.5; color: #d7e0fb; white-space: pre-wrap;
+  max-height: 96px; overflow: hidden; position: relative; }
+.hist-text.clamped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 26px;
+  background: linear-gradient(180deg, rgba(10,15,30,0), rgba(10,15,30,.95)); }
+.hist-actions { display: flex; gap: 6px; margin-top: 8px; }
+
+/* Карточка языковых пакетов перевода в настройках */
+.packs-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.pack-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+  border: 1px solid rgba(120,140,255,.16); border-radius: 10px; background: rgba(6,10,22,.5); }
+.pack-name { flex: 1; font-size: 11.5px; color: #dbe4ff; font-weight: 600; }
+.pack-meta { font-size: 10px; color: #7c89b8; font-family: 'Consolas', monospace; }
+.pack-tag { font-size: 9px; padding: 2px 7px; border-radius: 999px;
+  background: rgba(34,211,238,.14); color: #67e8f9; border: 1px solid rgba(34,211,238,.3); }
+.pack-tag.user { background: rgba(20,184,166,.14); color: #5eead4; border-color: rgba(20,184,166,.35); }

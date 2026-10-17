@@ -131,6 +131,21 @@ TESSDATA_DIR = os.path.join(RESOURCES_DIR, "tessdata")        # rus/eng.trainedd
 TESSERACT_DIR = os.path.join(RESOURCES_DIR, "tesseract")      # портативный Tesseract-OCR
 ARGOS_DIR = os.path.join(RESOURCES_DIR, "argos")              # модель перевода EN->RU
 
+# Пользовательские языковые пакеты перевода (скачиваются из программы,
+# хранятся рядом с настройками; встроенные пакеты лежат в ARGOS_DIR).
+USER_MODELS_DIR = os.path.join(user_data_dir(), "models", "argos")
+try:
+    os.makedirs(USER_MODELS_DIR, exist_ok=True)
+except OSError:
+    pass
+
+# Кэш индекса языковых пакетов Argos (обновляется раз в неделю, офлайн-работа)
+ARGOS_INDEX_CACHE = os.path.join(user_data_dir(), "argos_index.json")
+
+# История распознаваний (JSON: список записей, newest-first)
+HISTORY_FILE = os.path.join(user_data_dir(), "history.json")
+HISTORY_MAX_ITEMS = 500
+
 # Путь к исполняемому файлу tesseract (портативная сборка)
 if os.name == "nt":
     TESSERACT_CMD_CANDIDATES = [
@@ -173,7 +188,7 @@ if os.name == "nt":
 
 # Название и версия приложения (показываются в интерфейсе)
 APP_NAME = "Распознаватель"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 
 # Заголовок окна — используется и для поиска HWND (Win32) управления окном
 WINDOW_TITLE = f"{APP_NAME} — распознавание QR, текста и перевод офлайн"
@@ -225,12 +240,16 @@ def find_tesseract_cmd():
 
 
 def find_argos_models():
-    """Возвращает список файлов моделей Argos (.argosmodel / .ct2) внутри ресурсов."""
+    """
+    Список файлов моделей Argos (.argosmodel / .ct2): встроенные пакеты
+    (resources/argos) + скачанные пользователем (Raspoznavatel_data/models/argos).
+    """
     models = []
-    if os.path.isdir(ARGOS_DIR):
-        for name in os.listdir(ARGOS_DIR):
-            if name.endswith((".argosmodel", ".ct2")):
-                models.append(os.path.join(ARGOS_DIR, name))
+    for folder in (ARGOS_DIR, USER_MODELS_DIR):
+        if os.path.isdir(folder):
+            for name in sorted(os.listdir(folder)):
+                if name.endswith((".argosmodel", ".ct2")):
+                    models.append(os.path.join(folder, name))
     return models
 
 
