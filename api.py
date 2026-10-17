@@ -50,12 +50,9 @@ import qr_reader
 import screen_capture
 import translator
 
-# Фильтры диалога выбора файла — КАЖДЫЙ отдельной строкой формата
-# 'Описание (*.ext;*.ext)' (pywebview валидирует их регуляркой и не принимает
-# две группы, склеенные в одну строку через ';').
 IMAGE_FILTER = (
-    "Изображения (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tiff;*.tif;*.webp)",
-    "Все файлы (*.*)",
+    "Изображения (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tiff;*.tif;*.webp);"
+    "Все файлы (*.*)"
 )
 
 # Коды диалогов pywebview (webview.OPEN_DIALOG / SAVE_DIALOG)
@@ -172,7 +169,6 @@ class Api:
         self._hwnd = None                    # кэш HWND главного окна
         self._tray = None                    # иконка в трее (создаётся из main)
         self._busy = False
-        self._preload_started = False   # прогрев перевода запускается один раз
         self._settings = self._load_settings()
         if window is not None:
             self.attach_window(window)
@@ -646,9 +642,8 @@ class Api:
     def hotkey_recognize(self):
         """Срабатывание горячей клавиши распознавания (в отдельном потоке)."""
         def worker():
-            smart = bool(self._settings.get("smart_hotkey", True))
-            log.info(f"Горячая клавиша: {'умное распознавание (QR → текст)' if smart else 'распознавание текста'}")
-            result = self.capture_smart() if smart else self.capture_and_ocr()
+            log.info("Горячая клавиша: умное распознавание")
+            result = self.capture_smart()
             self._js_raw(f"window.onHotkeyResult && window.onHotkeyResult({json.dumps(result)})")
         threading.Thread(target=worker, daemon=True).start()
 
@@ -722,7 +717,7 @@ class Api:
                 OPEN_DIALOG,
                 directory=os.path.expanduser("~"),
                 allow_multiple=False,
-                file_types=IMAGE_FILTER,
+                file_types=(IMAGE_FILTER,),
             )
         except Exception as exc:
             return {"ok": False, "error": f"Диалог выбора файла не открылся: {exc}"}
@@ -980,10 +975,6 @@ class Api:
         if not self._settings.get("preload", True):
             log.info("Прогрев перевода отключён в настройках")
             return {"ok": True, "skipped": True}
-        if self._preload_started:
-            # вызовы из main и из интерфейса дублировались — прогрев один
-            return {"ok": True, "skipped": True}
-        self._preload_started = True
 
         def worker():
             log.info("Фоновый прогрев модели перевода…")

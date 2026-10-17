@@ -139,11 +139,8 @@ with sync_playwright() as p:
     # --- 6. Настройки: drawer, журнал, диагностика ---
     page.click("#settingsBtn"); page.wait_for_timeout(700)
     check("панель настроек открылась", page.evaluate("document.querySelector('#settingsDrawer').classList.contains('open')"))
-    logv = page.inner_text("#logBox")
-    check("журнал загружен в панель", "тестовая строка" in logv, logv[:40])
-    check("строки журнала окрашены по уровням (ok/info)",
-          page.evaluate("document.querySelectorAll('#logBox .log-ok').length") >= 1 and
-          page.evaluate("document.querySelectorAll('#logBox .log-line').length") >= 2)
+    logv = page.input_value("#logBox")
+    check("журнал загружен в поле", "тестовая строка" in logv, logv[:40])
     page.click("#copyLogBtn"); page.wait_for_timeout(300)
     check("«Копировать журнал» → copy_to_clipboard", calls("copy_to_clipboard") >= 2)
     page.click("#checkBtn"); page.wait_for_timeout(800)
