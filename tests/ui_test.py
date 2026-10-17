@@ -36,26 +36,31 @@ window.addEventListener('unhandledrejection', e => window.__errors.push('reject:
 const TINY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 const responses = {
-  get_info: {name:'Распознаватель', version:'2.2.0', frozen:true, data_dir:'C:/Raspoznavatel/Raspoznavatel_data', screenshots_dir:'C:/Raspoznavatel/Screenshots'},
-  get_settings: {ocr_langs:'auto', auto_copy:true, smart_hotkey:true, hotkey_recognize:'ctrl+shift+s', hotkey_screenshot:'ctrl+shift+p', autostart:false, preload:true},
+  get_info: {name:'Распознаватель', version:'2.3.0', frozen:true, data_dir:'C:/Raspoznavatel/Raspoznavatel_data', screenshots_dir:'C:/Raspoznavatel/Screenshots'},
+  get_settings: {ocr_langs:'auto', auto_copy:true, smart_hotkey:true, hotkey_recognize:'ctrl+shift+s', hotkey_screenshot:'ctrl+shift+p', autostart:false, preload:true, sound:true},
   save_settings: (args) => Object.assign({ok: true}, args[0]),
   get_available_langs: [{code:'rus',name:'Русский'},{code:'eng',name:'Английский'},{code:'deu',name:'Немецкий'}],
   pick_image: {ok:true, path:'C:/test/img.png', name:'img.png', base64:TINY_PNG},
-  save_dropped_file: {ok:true, path:'C:/tmp/drop.png', name:'drop.png', base64:TINY_PNG},
+  save_dropped_file: {ok:true, path:'C:/tmp/drop_qr.png', name:'drop_qr.png', base64:TINY_PNG},
+  recognize_file: (args) => String(args[0]).indexOf('qr') >= 0
+    ? {ok:true, mode:'qr', count:2, results:[{type:'QRCode', text:'https://example.com/привет', engine:'zxing-cpp'},{type:'EAN-13', text:'4600000000005', engine:'zxing-cpp'}]}
+    : {ok:true, mode:'ocr', text:'Hello world. Проверка OCR.', lang:'rus+eng', confidence:95.5, words:4, detected:'rus+eng'},
+  get_translation_pairs: {ok:true, pairs:[{src:'en',tgt:'ru',label:'Английский → Русский'},{src:'ru',tgt:'en',label:'Русский → Английский'}]},
+  open_image_zoom: {ok:true},
   ocr_image: {ok:true, text:'Hello world. Проверка OCR.', lang:'eng', confidence:95.5, words:4, detected:'eng'},
   decode_image: {ok:true, count:2, results:[{type:'QRCode', text:'https://example.com/привет', engine:'zxing-cpp'},{type:'EAN-13', text:'4600000000005', engine:'zxing-cpp'}]},
   capture_smart: {ok:true, mode:'ocr', shot:{base64:TINY_PNG, width:300, height:120}, text:'Текст с экрана распознан', lang:'rus', confidence:91.2, detected:'rus'},
   capture_and_ocr: {ok:true, mode:'ocr', shot:{base64:TINY_PNG, width:300, height:120}, text:'Текст с экрана', lang:'rus', confidence:90, detected:'rus'},
   capture_screenshot: {ok:true, path:'C:/Raspoznavatel/Screenshots/Скриншот_2026-10-16_12-00-00.png', width:400, height:200, base64:TINY_PNG},
-  translate_text: {ok:true, translated:'Привет, мир. Проверка перевода.'},
+  translate_text: (args) => ({ok:true, translated:'Привет, мир. Проверка перевода.', src:args[1], tgt:args[2]}),
   copy_to_clipboard: {ok:true},
-  get_log: '[12:00:00] [INFO] тестовая строка 1\n[12:00:01] [OK] тестовая строка 2',
+  get_log: '[12:00:00] [INFO] тестовая строка 1\n[12:00:01] [OK] тестовая строка 2\n[12:00:02] [ERROR] тестовая ошибка 3',
   clear_log: {ok:true},
   check_components: {
-    ocr:{ok:true, version:'5.4.0', langs:['rus','eng','deu'], error:null},
+    ocr:{ok:true, version:'5.5.3', langs:['rus','eng','chi_sim','deu'], error:null},
     qr:{'zxing-cpp':true,'pyzbar (ZBar)':true,'opencv':true, ok:true},
     screen:true, clipboard:true, tray:true,
-    translator:{ok:true, library:true, models:['translate-en_ru-1_9.argosmodel'], error:null}
+    translator:{ok:true, library:true, models:['translate-en_ru-1_9.argosmodel','translate-ru_en-1_9.argosmodel'], pairs:['en->ru','ru->en'], error:null}
   },
   get_autostart: {enabled:false, path:'C:/Users/test/AppData/.../Startup/Raspoznavatel.lnk'},
   preload_translator: {ok:true},
@@ -104,27 +109,51 @@ with sync_playwright() as p:
     page.click("#btnMax"); page.wait_for_timeout(300)
     check("кнопка «развернуть» вызывает win_maximize_toggle", calls("win_maximize_toggle") == 1)
 
-    # --- 2. Загрузка изображения ---
-    page.click("#pickBtn"); page.wait_for_timeout(600)
+    # --- 2. Загрузка изображения + АВТОраспознавание ---
+    page.click("#pickBtn"); page.wait_for_timeout(2600)
     check("«Загрузить изображение» → pick_image", calls("pick_image") == 1)
     check("превью появилось", page.is_visible("#previewCard"))
-
-    # --- 3. Распознать текст / QR ---
-    page.click("#runOcrBtn"); page.wait_for_timeout(1400)
-    check("«Распознать текст» → ocr_image", calls("ocr_image") == 1)
+    check("автораспознавание БЕЗ кнопок (recognize_file)", calls("recognize_file") == 1)
     val = page.input_value("#mainOutput")
-    check("текст OCR появился в поле (typewriter)", "Hello world" in val, val[:40])
-    page.click("#runQrBtn"); page.wait_for_timeout(1200)
-    check("«Найти QR» → decode_image", calls("decode_image") == 1)
-    check("карточки QR видны", page.is_visible("#qrResults"))
+    check("распознанный текст сразу в поле", "Hello world" in val, val[:40])
+    check("кнопки «Распознать текст»/«Найти QR» убраны",
+          page.evaluate("!document.querySelector('#runOcrBtn') && !document.querySelector('#runQrBtn')"))
+    check("версия 2.3.0 в интерфейсе", page.inner_text("#versionLabel") == "2.3.0",
+          page.inner_text("#versionLabel"))
+
+    # --- 3. Авто-режим QR (путь с 'qr' → мок вернёт коды) ---
+    page.evaluate("window.autoRecognize('C:/tmp/drop_qr.png')")
+    page.wait_for_timeout(1500)
+    check("QR-режим: карточки видны", page.is_visible("#qrResults"))
     qr_texts = page.inner_text("#qrResults")
     check("QR-текст отображён", "example.com" in qr_texts, qr_texts[:50])
 
-    # --- 4. Копирование / перевод ---
+    # --- 3б. Лупа: клик по превью открывает отдельное окно ---
+    page.click("#previewImg"); page.wait_for_timeout(400)
+    check("клик по картинке → open_image_zoom", calls("open_image_zoom") == 1)
+
+    # --- 3в. Шкала прогресса ---
+    page.evaluate("window.onProgress(42, 'тестовая стадия')")
+    page.wait_for_timeout(450)
+    w42 = page.evaluate("document.querySelector('#progressFill').style.width")
+    check("шкала прогресса показывает 42%", w42 == "42%", w42)
+    page.evaluate("window.onProgress(-1, '')")
+    page.wait_for_timeout(200)
+
+    # --- 4. Копирование / перевод + выбор направления ---
     page.click("#copyBtn"); page.wait_for_timeout(300)
     check("«Копировать» → copy_to_clipboard", calls("copy_to_clipboard") >= 1)
+    n_opts = page.evaluate("document.querySelector('#trFrom').options.length")
+    check("селекторы направления заполнены (EN/RU)", n_opts >= 2, str(n_opts))
+    page.click("#trSwap"); page.wait_for_timeout(250)
+    swapped = page.evaluate("document.querySelector('#trFrom').value")
+    both = page.evaluate("document.querySelector('#trFrom2').value")
+    check("⇄ меняет направление на RU→EN", swapped == "ru", swapped)
+    check("селекторы синхронны в ОБОИХ окнах", both == "ru", both)
     page.click("#translateBtn"); page.wait_for_timeout(1200)
     check("«Перевести» → translate_text", calls("translate_text") == 1)
+    targs = page.evaluate("window.__calls.filter(c=>c.m==='translate_text').slice(-1)[0].args")
+    check("направление (ru,en) передано в API", len(targs) >= 3 and targs[1] == "ru" and targs[2] == "en", str(targs))
     tr = page.input_value("#trOutput")
     check("перевод появился", "перевода" in tr, tr[:40])
 
@@ -133,10 +162,12 @@ with sync_playwright() as p:
     check("«Распознать с экрана» → capture_smart", calls("capture_smart") == 1)
     page.click("#shotBtn"); page.wait_for_timeout(800)
     check("«Скриншот области» → capture_screenshot(False)", calls("capture_screenshot") == 1)
-    page.click("#shotAsBtn"); page.wait_for_timeout(800)
-    check("«Сохранить как…» → capture_screenshot(True)", calls("capture_screenshot") == 2)
+    check("кнопка «Сохранить как…» убрана", page.evaluate("!document.querySelector('#shotAsBtn')"))
+    check("значок папки появился в статус-баре", page.is_visible("#statusFolderBtn"))
+    page.click("#statusFolderBtn"); page.wait_for_timeout(300)
+    check("клик по значку → open_screenshots_dir", calls("open_screenshots_dir") >= 1)
 
-    # --- 6. Настройки: drawer, журнал, диагностика ---
+    # --- 6. Настройки: drawer, журнал, диагностика, звук ---
     page.click("#settingsBtn"); page.wait_for_timeout(700)
     check("панель настроек открылась", page.evaluate("document.querySelector('#settingsDrawer').classList.contains('open')"))
     logv = page.inner_text("#logBox")
@@ -144,6 +175,11 @@ with sync_playwright() as p:
     check("строки журнала окрашены по уровням (ok/info)",
           page.evaluate("document.querySelectorAll('#logBox .log-ok').length") >= 1 and
           page.evaluate("document.querySelectorAll('#logBox .log-line').length") >= 2)
+    check("ошибки КРАСНЫМ (.log-err)",
+          page.evaluate("document.querySelectorAll('#logBox .log-err').length") >= 1)
+    page.click("label:has(#setSound)"); page.wait_for_timeout(400)
+    snd = page.evaluate("window.__calls.filter(c=>c.m==='save_settings').slice(-1)[0].args[0]")
+    check("переключатель звука → save_settings c sound=false", '"sound":false' in snd, snd[-120:])
     page.click("#copyLogBtn"); page.wait_for_timeout(300)
     check("«Копировать журнал» → copy_to_clipboard", calls("copy_to_clipboard") >= 2)
     page.click("#checkBtn"); page.wait_for_timeout(800)

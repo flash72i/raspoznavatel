@@ -70,10 +70,6 @@
     <svg viewBox="0 0 24 24" class="btn-icon"><path d="M9 3L7.2 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.2L15 3H9zm3 5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zm0 2A3.5 3.5 0 1 0 12 15.5 3.5 3.5 0 0 0 12 10z" fill="currentColor"/></svg>
     Скриншот области
   </button>
-  <button class="btn3d btn-ghost ripple" id="shotAsBtn" data-tooltip="Скриншот области с выбором места сохранения">
-    <svg viewBox="0 0 24 24" class="btn-icon"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10v4z" fill="currentColor"/></svg>
-    Сохранить как…
-  </button>
   <div class="toolbar-spacer"></div>
   <button class="gear-btn ripple" id="settingsBtn" data-tooltip="Настройки, языки, журнал">
     <svg viewBox="0 0 24 24"><path d="M19.4 13a7.8 7.8 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.7 7.7 0 0 0-1.7-1L15 3H9l-.3 2.6a7.7 7.7 0 0 0-1.7 1l-2.4-1-2 3.4L4.6 11a7.8 7.8 0 0 0 0 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.8 1.7 1L9 21h6l.3-2.6c.6-.2 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z" fill="currentColor"/></svg>
@@ -91,15 +87,11 @@
     </div>
 
     <div class="preview-card glass-inner hidden" id="previewCard">
-      <img id="previewImg" alt="Загруженное изображение">
+      <img id="previewImg" class="zoomable" alt="Загруженное изображение"
+           data-tooltip="Нажмите, чтобы открыть в отдельном окне и увеличить (колесо = зум)">
       <div class="preview-row">
         <span class="preview-name" id="previewName"></span>
-        <button class="mini-btn ripple" id="runOcrBtn" data-tooltip="Распознать текст на загруженной картинке">
-          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5z" fill="currentColor"/></svg> Распознать текст
-        </button>
-        <button class="mini-btn ripple" id="runQrBtn" data-tooltip="Найти QR/штрих-коды на загруженной картинке">
-          <svg viewBox="0 0 24 24"><path d="M3 3h7v7H3V3zm2 2v3h3V5H5zm8-2h7v7h-7V3zm2 2v3h3V5h-3zM3 13h7v7H3v-7zm2 2v3h3v-3H5zm8 0h2v2h-2v-2zm4 0h3v3h-3v-3zm-4 4h2v2h-2v-2zm4 0h3v3h-3v-2z" fill="currentColor"/></svg> Найти QR
-        </button>
+        <span class="preview-auto-hint">⚡ Распознавание запускается автоматически (сначала QR, затем текст)</span>
       </div>
     </div>
 
@@ -107,8 +99,12 @@
     <div class="lang-panel glass-inner auto-hint">
       <svg viewBox="0 0 24 24" class="hint-icon"><path d="M12.9 3h-1.8l-.8 2.2H6.4v1.8h3.3C8.6 9.9 7 12.3 4.8 13.6l1 1.7c1.9-1.2 3.4-3.2 4.4-5.5.9 1.7 2.1 3.2 3.6 4.3l1.1-1.6c-1.7-1.2-3-2.9-3.8-4.9h3.2L12.9 3zm3.5 7.6L12 22h2l1-2.8h4.3L20.3 22h2l-4.4-11.4h-1.5z" fill="currentColor"/></svg>
       <div>
-        <b>Язык текста определяется автоматически</b>
-        <span>Русский, английский, украинский, немецкий, французский, испанский, итальянский, португальский, польский, турецкий, нидерландский, чешский, белорусский, казахский — и любой другой, чей файл <i>.traineddata</i> положен в <i>App\resources\tessdata</i>.</span>
+        <b>Языки текста определяются автоматически — даже смешанные</b>
+        <span>Русский + английский + китайский на одной картинке распознаются вместе: программа
+        определяет письменности параллельными пробами и выполняет один проход комбинированным
+        набором языков. Также доступны украинский, немецкий, французский, испанский, итальянский,
+        португальский, польский, турецкий, нидерландский, чешский, белорусский, казахский — и любой
+        другой, чей файл <i>.traineddata</i> положен в <i>App\resources\tessdata</i>.</span>
       </div>
     </div>
   </section>
@@ -123,7 +119,12 @@
           <button class="mini-btn ripple" id="copyBtn" data-tooltip="Скопировать результат в буфер обмена">
             <svg viewBox="0 0 24 24"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z" fill="currentColor"/></svg> Копировать
           </button>
-          <button class="mini-btn ripple" id="translateBtn" data-tooltip="Перевести английский текст на русский (офлайн)">
+          <span class="tr-dir" data-tooltip="Направление перевода (офлайн)">
+            <select class="tr-select" id="trFrom2" aria-label="С какого языка"></select>
+            <span class="tr-arrow">→</span>
+            <select class="tr-select" id="trTo2" aria-label="На какой язык"></select>
+          </span>
+          <button class="mini-btn ripple" id="translateBtn" data-tooltip="Перевести текст выбранным направлением (офлайн)">
             <svg viewBox="0 0 24 24"><path d="M12.9 3h-1.8l-.8 2.2H6.4v1.8h3.3C8.6 9.9 7 12.3 4.8 13.6l1 1.7c1.9-1.2 3.4-3.2 4.4-5.5.9 1.7 2.1 3.2 3.6 4.3l1.1-1.6c-1.7-1.2-3-2.9-3.8-4.9h3.2L12.9 3zm3.5 7.6L12 22h2l1-2.8h4.3L20.3 22h2l-4.4-11.4h-1.5z" fill="currentColor"/></svg> Перевести
           </button>
           <button class="mini-btn ripple" id="clearBtn" data-tooltip="Очистить результат">
@@ -138,8 +139,13 @@
     <!-- Перевод -->
     <div class="output-card glass-inner translate-card">
       <div class="output-head">
-        <span class="output-title">Перевод на русский <span class="editable-hint">(офлайн, можно редактировать)</span></span>
+        <span class="output-title">Перевод <span class="editable-hint">(офлайн, можно редактировать)</span></span>
         <div class="output-actions">
+          <span class="tr-dir" data-tooltip="Направление перевода: выберите пару (офлайн-модели в комплекте: EN↔RU)">
+            <select class="tr-select" id="trFrom" aria-label="С какого языка"></select>
+            <button class="tr-swap ripple" id="trSwap" data-tooltip="Поменять направления местами" aria-label="Поменять направления">⇄</button>
+            <select class="tr-select" id="trTo" aria-label="На какой язык"></select>
+          </span>
           <button class="mini-btn ripple" id="copyTrBtn" data-tooltip="Скопировать перевод">
             <svg viewBox="0 0 24 24"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z" fill="currentColor"/></svg> Копировать
           </button>
@@ -148,7 +154,7 @@
           </button>
         </div>
       </div>
-      <textarea class="output-edit short" id="trOutput" placeholder="Нажмите «Перевести» — перевод с английского появится здесь…" spellcheck="false"></textarea>
+      <textarea class="output-edit short" id="trOutput" placeholder="Нажмите «Перевести» — перевод появится здесь…" spellcheck="false"></textarea>
     </div>
   </section>
 </main>
@@ -157,6 +163,9 @@
 <footer class="status-bar glass">
   <span class="status-dot" id="statusDot"></span>
   <span class="status-text" id="statusText">Инициализация…</span>
+  <button class="status-folder hidden" id="statusFolderBtn" data-tooltip="Открыть папку, куда сохранён скриншот" aria-label="Открыть папку скриншотов">
+    <svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z" fill="currentColor"/></svg>
+  </button>
   <span class="status-hotkeys" id="statusHotkeys">Ctrl+Shift+S — распознать · Ctrl+Shift+P — скриншот</span>
   <span class="status-right" id="statusRight">офлайн</span>
 </footer>
@@ -183,7 +192,11 @@
       <label class="uiverse-switch"><input type="checkbox" id="setPreload" checked>
         <span class="switch-track"><span class="switch-thumb"></span></span>
         <span class="switch-label">Прогревать переводчик в фоне после запуска</span></label>
+      <label class="uiverse-switch"><input type="checkbox" id="setSound" checked>
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-label">Звуковые уведомления («бульк» на готово, сигнал на ошибку)</span></label>
       <div class="folder-row">
+        <button class="mini-btn ripple" id="soundTestBtn">🔊 Проверить звук</button>
         <button class="mini-btn ripple" id="openShotsBtn">📁 Папка скриншотов</button>
         <button class="mini-btn ripple" id="openDataBtn">📁 Папка данных</button>
       </div>
@@ -246,7 +259,7 @@
   </div>
 </aside>
 
-<!-- ============ ЛОАДЕР (стиль Uiverse) ============ -->
+<!-- ============ ЛОАДЕР (стиль Uiverse) + ШКАЛА ПРОГРЕССА ============ -->
 <div class="loader-overlay hidden" id="loaderOverlay">
   <div class="loader-card glass-inner">
     <div class="uiverse-loader">
@@ -254,6 +267,10 @@
       <div class="ring r3"></div><div class="ring r4"></div>
     </div>
     <p class="loader-text" id="loaderText">Обработка…</p>
+    <div class="progress-track hidden" id="progressTrack">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+    <p class="progress-pct hidden" id="progressPct">0%</p>
   </div>
 </div>
 

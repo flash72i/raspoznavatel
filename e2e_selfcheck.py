@@ -254,6 +254,27 @@ def run(window, api):
         js_async("restore2", f"window.pywebview.api.save_settings(Object.assign({{}}, {json.dumps(base)}, {{hotkey_screenshot: 'ctrl+shift+p'}}))")
         js("(function(){ document.querySelector('#drawerClose').click(); return 1; })()")
 
+        # --- 8б. v2.3: направления перевода, шкала прогресса, звук ---
+        rp = js_async("pairs", "window.pywebview.api.get_translation_pairs()")
+        ok_pairs = isinstance(rp, dict) and rp.get("ok") and len(rp.get("pairs", [])) >= 1
+        rep.add("get_translation_pairs вернул направления (≥1)", ok_pairs,
+                json.dumps(rp, ensure_ascii=False)[:140])
+
+        sel_n = js("(function(){ var e=document.querySelector('#trFrom'); return e ? e.options.length : -1; })()")
+        rep.add("селекторы направления перевода заполнены (≥2 языков)", int(sel_n or -1) >= 2, str(sel_n))
+
+        js("window.onProgress(42, 'E2E stage')")
+        time.sleep(0.4)
+        pw = js("(function(){ return document.querySelector('#progressFill').style.width; })()")
+        rep.add("шкала прогресса реагирует на onProgress(42)", pw == "42%", str(pw))
+        js("window.onProgress(-1, '')")
+
+        rs = js_async("soundoff", f"window.pywebview.api.save_settings(Object.assign({{}}, {json.dumps(base)}, {{sound: false}}))")
+        ok_sound = isinstance(rs, dict) and rs.get("ok") is True and rs.get("sound") is False
+        rep.add("настройка звука сохраняется (sound=false)", ok_sound,
+                json.dumps(rs, ensure_ascii=False)[:140])
+        js_async("soundon", f"window.pywebview.api.save_settings(Object.assign({{}}, {json.dumps(base)}, {{sound: true}}))")
+
         # --- 9. диагностика компонентов через мост ---
         rc = js_async("comp", "window.pywebview.api.check_components()", timeout=90)
         good = isinstance(rc, dict) and all(k in rc for k in ("ocr", "qr", "screen", "clipboard", "translator"))

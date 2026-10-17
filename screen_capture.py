@@ -79,6 +79,19 @@ class RegionSelector:
     def select(self):
         import tkinter as tk  # локальный импорт — не грузим Tk при старте
 
+        # Windows: делаем процесс DPI-осведомым, чтобы координаты выделения
+        # совпадали с физическими пикселями экрана (иначе на масштабе 125/150%
+        # рамка «уезжает» от курсора, а снимок получается не той области).
+        if os.name == "nt":
+            try:
+                import ctypes
+                try:
+                    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+                except Exception:
+                    ctypes.windll.user32.SetProcessDpiAware()
+            except Exception:
+                pass
+
         root = tk.Tk()
         root.title("Выделите область")
         root.attributes("-fullscreen", True)
@@ -90,16 +103,24 @@ class RegionSelector:
         canvas.pack(fill="both", expand=True)
         canvas.create_text(
             root.winfo_screenwidth() // 2, 40,
-            text="Зажмите левую кнопку мыши и выделите область.  Esc — отмена.",
-            fill="#22d3ee", font=("Segoe UI", 14, "bold")
+            text="Зажмите левую кнопку мыши и выделите нужную область экрана",
+            fill="#22d3ee", font=("Segoe UI", 15, "bold")
+        )
+        canvas.create_text(
+            root.winfo_screenwidth() // 2, 68,
+            text="Отпустите кнопку — область будет распознана.  Esc или правая кнопка — отмена.",
+            fill="#9fb0e8", font=("Segoe UI", 11)
         )
 
-        state = {"start": None, "rect_id": None}
+        state = {"start": None, "rect_id": None, "size_id": None}
 
         def on_press(event):
             state["start"] = (event.x_root, event.y_root)
             state["rect_id"] = canvas.create_rectangle(
                 event.x, event.y, event.x, event.y, outline="#22d3ee", width=2)
+            state["size_id"] = canvas.create_text(
+                event.x + 6, event.y + 14, anchor="nw", text="",
+                fill="#22d3ee", font=("Segoe UI", 10, "bold"))
 
         def on_drag(event):
             if state["start"] is None or state["rect_id"] is None:
@@ -107,6 +128,11 @@ class RegionSelector:
             x0 = state["start"][0] - root.winfo_rootx()
             y0 = state["start"][1] - root.winfo_rooty()
             canvas.coords(state["rect_id"], x0, y0, event.x, event.y)
+            if state["size_id"] is not None:
+                w = abs(event.x - x0)
+                h = abs(event.y - y0)
+                canvas.coords(state["size_id"], min(x0, event.x) + 6, min(y0, event.y) + 8)
+                canvas.itemconfigure(state["size_id"], text=f"{w} × {h}")
 
         def on_release(event):
             if state["start"] is None:

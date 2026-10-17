@@ -173,7 +173,7 @@ if os.name == "nt":
 
 # Название и версия приложения (показываются в интерфейсе)
 APP_NAME = "Распознаватель"
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.3.0"
 
 # Заголовок окна — используется и для поиска HWND (Win32) управления окном
 WINDOW_TITLE = f"{APP_NAME} — распознавание QR, текста и перевод офлайн"
@@ -253,7 +253,7 @@ LANG_NAMES = {
 
 # Приоритет для автоопределения (сначала самые вероятные)
 AUTO_LANG_PRIORITY = [
-    "rus", "eng", "ukr", "deu", "fra", "spa", "ita", "por",
+    "rus", "eng", "chi_sim", "ukr", "deu", "fra", "spa", "ita", "por",
     "pol", "tur", "nld", "ces", "bel", "kaz",
 ]
 

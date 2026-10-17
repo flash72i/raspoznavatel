@@ -23,11 +23,46 @@ const state = {
   settings: {
     ocr_langs: "auto", auto_copy: true, smart_hotkey: true,
     hotkey_recognize: "ctrl+shift+s", hotkey_screenshot: "ctrl+shift+p",
-    autostart: false, preload: true,
+    autostart: false, preload: true, sound: true,
   },
   shotCount: 0,
   recording: null,   // какое поле горячей клавиши сейчас записывается
+  pairs: [],         // доступные направления перевода [{src,tgt,label}]
+  trFrom: "en",
+  trTo: "ru",
 };
+
+/* ---------------------------------------------------------------------------
+   ЗВУКИ (WebAudio-синтез, без файлов): «бульк» на готово, клик на скриншот,
+   низкий сигнал на ошибку. Включаются/выключаются в настройках (sound).
+--------------------------------------------------------------------------- */
+let _actx = null;
+function actx() {
+  if (!_actx) { try { _actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  return _actx;
+}
+function playSound(kind) {
+  if (state.settings.sound === false) return;
+  const ctx = actx();
+  if (!ctx) return;
+  if (ctx.state === "suspended") ctx.resume().catch(() => {});
+  const t = ctx.currentTime;
+  const tone = (freq, start, dur, type = "sine", vol = 0.15) => {
+    try {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = type; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t + start);
+      g.gain.exponentialRampToValueAtTime(vol, t + start + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + start + dur);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(t + start); o.stop(t + start + dur + 0.05);
+    } catch (e) {}
+  };
+  if (kind === "ok")        { tone(660, 0, 0.09); tone(880, 0.09, 0.15); }                 // «бульк»
+  else if (kind === "qr")   { tone(740, 0, 0.07); tone(988, 0.07, 0.09); tone(1175, 0.15, 0.12); }
+  else if (kind === "shot") { tone(1500, 0, 0.03, "square", 0.10); tone(900, 0.035, 0.05, "square", 0.08); }
+  else if (kind === "err")  { tone(220, 0, 0.16, "sawtooth", 0.09); tone(170, 0.13, 0.22, "sawtooth", 0.09); }
+}
 
 /* ---------------------------------------------------------------------------
    ЕДИНАЯ обёртка вызовов Python-API: ошибки -> тост + журнал Python
@@ -88,12 +123,29 @@ function showLoader(text = "Обработка…") {
 }
 function hideLoader() {
   loaderCount = Math.max(0, loaderCount - 1);
-  if (loaderCount === 0) $("#loaderOverlay").classList.add("hidden");
+  if (loaderCount === 0) {
+    $("#loaderOverlay").classList.add("hidden");
+    updateProgress(-1);
+  }
 }
+/* Шкала прогресса: pct 0..100, pct<0 — спрятать */
+function updateProgress(pct, text) {
+  const track = $("#progressTrack"), fill = $("#progressFill"), p = $("#progressPct");
+  if (!track || !fill || !p) return;
+  if (pct == null || pct < 0) {
+    track.classList.add("hidden"); p.classList.add("hidden");
+    return;
+  }
+  track.classList.remove("hidden"); p.classList.remove("hidden");
+  fill.style.width = Math.max(0, Math.min(100, pct)) + "%";
+  p.textContent = Math.round(pct) + "%" + (pct >= 100 ? " · готово" : "");
+  if (text) $("#loaderText").textContent = text;
+}
+window.onProgress = (pct, text) => updateProgress(pct, text);
 
 /* Колбэки из Python */
 window.onStatus = (t) => setStatus(t);
-window.onError = (t) => { toast(t, "error", 6000); setStatus("Ошибка: " + t, "error"); };
+window.onError = (t) => { toast(t, "error", 6000); setStatus("Ошибка: " + t, "error"); playSound("err"); };
 
 /* --- цветной журнал: ERROR — красный, WARN — жёлтый, OK — зелёный --- */
 function logLevelOf(line) {
@@ -282,12 +334,50 @@ async function pickImage() {
       state.imagePath = r.path; state.imageName = r.name;
       setPreview(r.base64, r.name);
       setStatus("Файл загружен: " + r.name);
-      toast("Изображение загружено", "success");
+      toast("Изображение загружено — распознаю…", "success");
+      await autoRecognize(r.path);
     } else if (r && r.error) {
       toast(r.error, "error", 6000);
+      playSound("err");
     }
   } catch (e) { /* callApi уже сообщил */ }
   finally { hideLoader(); }
+}
+
+/* АВТОраспознавание добавленного изображения: QR → текст, без кнопок */
+async function autoRecognize(path) {
+  showLoader("Распознаю…");
+  updateProgress(2, "Смотрю, что на изображении…");
+  try {
+    const r = await callApi("recognize_file", path);
+    if (!r || !r.ok) {
+      if (r && r.error) { toast(r.error, "error", 6000); playSound("err"); }
+      return;
+    }
+    if (r.mode === "qr") {
+      showQrResult(r.results || [], `Найдено кодов: ${r.count}`);
+      toast(`QR/штрих-код распознан (${r.count} шт.)`, "success");
+      playSound("qr");
+      if (r.count) autoCopy(state.resultText);
+    } else if (r.text && r.text.trim()) {
+      const det = r.detected ? ` · языки: ${String(r.detected).split("+").join(" + ").toUpperCase()}` : "";
+      showTextResult(r.text, "Распознанный текст" + det);
+      toast(`Текст распознан${r.confidence != null ? ` (${r.confidence}%)` : ""}${det}`, "success");
+      playSound("ok");
+      autoCopy(r.text);
+    } else {
+      toast("Ни кодов, ни текста на изображении не найдено", "info");
+      playSound("err");
+    }
+  } catch (e) { playSound("err"); }
+  finally { hideLoader(); }
+}
+
+/* Клик по превью — открыть картинку в отдельном окне-лупе НАД картинкой */
+function openImageZoom(e) {
+  if (!state.imagePath || !pyapi()) return;
+  const x = Math.round((e && e.screenX) || 0), y = Math.round((e && e.screenY) || 0);
+  callApi("open_image_zoom", state.imagePath, x, y).catch(() => {});
 }
 
 async function handleDrop(file) {
@@ -305,7 +395,10 @@ async function handleDrop(file) {
     if (r && r.ok) {
       state.imagePath = r.path; state.imageName = r.name;
       setPreview(r.base64, r.name);
-      toast("Изображение загружено", "success");
+      toast("Изображение загружено — распознаю…", "success");
+      hideLoader();
+      await autoRecognize(r.path);
+      return;
     } else toast((r && r.error) || "Не удалось сохранить файл", "error");
   } catch (e) { /* уже сообщено */ }
   finally { hideLoader(); }
@@ -380,34 +473,6 @@ function autoCopy(t) {
 /* ---------------------------------------------------------------------------
    Действия
 --------------------------------------------------------------------------- */
-async function runOcrOnFile() {
-  if (!state.imagePath) { toast("Сначала загрузите изображение", "info"); return; }
-  showLoader("Определяю язык и распознаю текст…");
-  try {
-    const r = await callApi("ocr_image", state.imagePath, state.settings.ocr_langs);
-    if (!r || !r.ok) { if (r && r.error) toast(r.error, "error", 6000); return; }
-    if (!r.text || !r.text.trim()) { toast("Текст на изображении не найден", "info"); return; }
-    const det = r.detected ? ` · язык: ${r.detected}` : "";
-    showTextResult(r.text, "Распознанный текст" + det);
-    toast(`Текст распознан${r.confidence != null ? ` (${r.confidence}%)` : ""}${det}`, "success");
-    autoCopy(r.text);
-  } catch (e) {}
-  finally { hideLoader(); }
-}
-
-async function runQrOnFile() {
-  if (!state.imagePath) { toast("Сначала загрузите изображение", "info"); return; }
-  showLoader("Поиск QR и штрих-кодов…");
-  try {
-    const r = await callApi("decode_image", state.imagePath);
-    if (!r || !r.ok) { if (r && r.error) toast(r.error, "error", 6000); return; }
-    showQrResult(r.results, r.count ? `Найдено кодов: ${r.count}` : "Коды не найдены");
-    toast(r.count ? `Найдено кодов: ${r.count}` : "Коды не найдены", r.count ? "success" : "info");
-    if (r.count) autoCopy(state.resultText);
-  } catch (e) {}
-  finally { hideLoader(); }
-}
-
 async function runScreenCapture() {
   showLoader("Выделите область на экране…");
   try {
@@ -423,52 +488,120 @@ async function runScreenCapture() {
 function applyCaptureResult(r) {
   if (r.mode === "qr") {
     showQrResult(r.results || [], r.count ? `QR с экрана: найдено ${r.count}` : "QR с экрана: коды не найдены");
-    if (r.count) { toast(`QR распознан (${r.count} шт.)`, "success"); autoCopy(state.resultText); }
-    else toast("QR-код в области не найден", "info");
+    if (r.count) { toast(`QR распознан (${r.count} шт.)`, "success"); playSound("qr"); autoCopy(state.resultText); }
+    else { toast("QR-код в области не найден", "info"); playSound("err"); }
   } else {
     if (r.text && r.text.trim()) {
-      const det = r.detected ? ` · язык: ${r.detected}` : "";
+      const det = r.detected ? ` · языки: ${String(r.detected).split("+").join(" + ").toUpperCase()}` : "";
       showTextResult(r.text, "Текст с экрана" + det);
       toast("Текст с экрана распознан" + det, "success");
+      playSound("ok");
       autoCopy(r.text);
-    } else toast("Текст в выделенной области не найден", "info");
+    } else { toast("Текст в выделенной области не найден", "info"); playSound("err"); }
   }
 }
 
 window.onHotkeyResult = (r) => {
   if (!r || r.cancelled) return;
-  if (!r.ok) { if (r.error) toast(r.error, "error", 6000); return; }
+  if (!r.ok) { if (r.error) { toast(r.error, "error", 6000); playSound("err"); } return; }
   applyCaptureResult(r);
 };
 
-async function takeScreenshot(askFolder) {
+function showShotSaved(path) {
+  state.shotCount++;
+  setStatus("Скриншот сохранён: " + path);
+  const fb = $("#statusFolderBtn");
+  if (fb) fb.classList.remove("hidden");
+  toast(`Скриншот сохранён: ${path}`, "success", 5200);
+  playSound("shot");
+}
+
+async function takeScreenshot() {
   showLoader("Выделите область для скриншота…");
   try {
-    const r = await callApi("capture_screenshot", askFolder === true);
+    const r = await callApi("capture_screenshot", false);
     hideLoader();
     if (!r || r.cancelled) return;
-    if (!r.ok) { if (r.error) toast(r.error, "error", 6000); return; }
-    state.shotCount++;
-    toast(`Скриншот сохранён: ${r.path}`, "success", 5200);
+    if (!r.ok) { if (r.error) { toast(r.error, "error", 6000); playSound("err"); } return; }
+    showShotSaved(r.path);
   } catch (e) { hideLoader(); }
 }
 
 window.onScreenshotResult = (r) => {
   if (!r || r.cancelled) return;
-  if (!r.ok) { if (r.error) toast(r.error, "error", 6000); return; }
-  state.shotCount++;
-  toast(`Скриншот сохранён: ${r.path}`, "success", 5200);
+  if (!r.ok) { if (r.error) { toast(r.error, "error", 6000); playSound("err"); } return; }
+  showShotSaved(r.path);
 };
+
+/* ---------------------------------------------------------------------------
+   Перевод: выбор направления «с какого на какой» (синхронно в обоих окнах)
+--------------------------------------------------------------------------- */
+const LANG_LABELS = {
+  en: "Английский", ru: "Русский", uk: "Украинский", de: "Немецкий",
+  fr: "Французский", es: "Испанский", it: "Итальянский", pt: "Португальский",
+  pl: "Польский", tr: "Турецкий", nl: "Нидерландский", cs: "Чешский",
+  be: "Белорусский", kk: "Казахский", zh: "Китайский", ja: "Японский",
+  ko: "Корейский", ar: "Арабский", he: "Иврит", el: "Греческий",
+  sv: "Шведский", fi: "Финский",
+};
+function langLabel(code) { return LANG_LABELS[code] || String(code).toUpperCase(); }
+
+function fillDirSelects() {
+  const codes = [];
+  state.pairs.forEach(p => { if (!codes.includes(p.src)) codes.push(p.src); if (!codes.includes(p.tgt)) codes.push(p.tgt); });
+  if (!codes.length) codes.push("en", "ru");
+  [["#trFrom", state.trFrom], ["#trTo", state.trTo], ["#trFrom2", state.trFrom], ["#trTo2", state.trTo]]
+    .forEach(([sel, val]) => {
+      const el = $(sel); if (!el) return;
+      el.innerHTML = "";
+      codes.forEach(c => {
+        const o = document.createElement("option");
+        o.value = c; o.textContent = langLabel(c);
+        if (c === val) o.selected = true;
+        el.appendChild(o);
+      });
+    });
+}
+
+function setDirection(src, tgt, save = true) {
+  state.trFrom = src || state.trFrom;
+  state.trTo = tgt || state.trTo;
+  fillDirSelects();
+  if (save) { try { localStorage.setItem("tr_dir", JSON.stringify([state.trFrom, state.trTo])); } catch (e) {} }
+}
+
+function initTranslationDirs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("tr_dir") || "null");
+    if (Array.isArray(saved) && saved.length === 2) { state.trFrom = saved[0]; state.trTo = saved[1]; }
+  } catch (e) {}
+  ["#trFrom", "#trFrom2"].forEach(s => { const el = $(s); if (el) el.addEventListener("change", () => setDirection(el.value, state.trTo)); });
+  ["#trTo", "#trTo2"].forEach(s => { const el = $(s); if (el) el.addEventListener("change", () => setDirection(state.trFrom, el.value)); });
+  const swap = $("#trSwap");
+  if (swap) swap.addEventListener("click", () => setDirection(state.trTo, state.trFrom));
+  fillDirSelects();
+}
+
+async function loadTranslationPairs() {
+  try {
+    const r = await callApi("get_translation_pairs");
+    state.pairs = (r && r.pairs) || [];
+  } catch (e) { state.pairs = []; }
+  if (!state.pairs.length) state.pairs = [{ src: "en", tgt: "ru", label: "Английский → Русский" }];
+  fillDirSelects();
+}
 
 async function translateCurrent() {
   const t = currentResultText();
-  if (!t || !t.trim()) { toast("Сначала распознайте или введите английский текст", "info"); return; }
-  showLoader("Перевод (офлайн)…");
+  if (!t || !t.trim()) { toast("Сначала распознайте или введите текст", "info"); return; }
+  showLoader(`Перевод ${langLabel(state.trFrom)} → ${langLabel(state.trTo)} (офлайн)…`);
+  updateProgress(3, "Готовлю модель перевода…");
   try {
-    const r = await callApi("translate_text", t);
-    if (!r || !r.ok) { if (r && r.error) toast(r.error, "error", 6000); return; }
+    const r = await callApi("translate_text", t, state.trFrom, state.trTo);
+    if (!r || !r.ok) { if (r && r.error) { toast(r.error, "error", 7000); playSound("err"); } return; }
     typeIntoTextarea($("#trOutput"), r.translated);
-    toast("Перевод готов", "success");
+    toast(`Перевод готов (${langLabel(r.src || state.trFrom)} → ${langLabel(r.tgt || state.trTo)})`, "success");
+    playSound("ok");
     autoCopy(r.translated);
   } catch (e) {}
   finally { hideLoader(); }
@@ -639,13 +772,19 @@ function initHotkeyRecorder() {
 }
 
 function initSettings() {
-  const map = { setAutoCopy: "auto_copy", setSmart: "smart_hotkey", setPreload: "preload" };
+  const map = { setAutoCopy: "auto_copy", setSmart: "smart_hotkey", setPreload: "preload", setSound: "sound" };
   for (const [id, key] of Object.entries(map)) {
     const el = $("#" + id);
     if (!el) continue;
     el.checked = state.settings[key] !== false;
-    el.addEventListener("change", () => { state.settings[key] = el.checked; pushSettings(); });
+    el.addEventListener("change", () => {
+      state.settings[key] = el.checked;
+      if (key === "sound" && el.checked) playSound("ok");   // сразу слышно результат
+      pushSettings();
+    });
   }
+  const st = $("#soundTestBtn");
+  if (st) st.addEventListener("click", () => playSound("ok"));
   $("#setAutostart").addEventListener("change", async () => {
     state.settings.autostart = $("#setAutostart").checked;
     await pushSettings();   // Python создаст/удалит ярлык в папке «Автозагрузка»
@@ -694,10 +833,11 @@ async function runDiagnostics() {
 function bindButtons() {
   $("#pickBtn").addEventListener("click", pickImage);
   $("#screenBtn").addEventListener("click", runScreenCapture);
-  $("#shotBtn").addEventListener("click", () => takeScreenshot(false));
-  $("#shotAsBtn").addEventListener("click", () => takeScreenshot(true));
-  $("#runOcrBtn").addEventListener("click", runOcrOnFile);
-  $("#runQrBtn").addEventListener("click", runQrOnFile);
+  $("#shotBtn").addEventListener("click", () => takeScreenshot());
+  const pv = $("#previewImg");
+  if (pv) pv.addEventListener("click", openImageZoom);
+  const fb = $("#statusFolderBtn");
+  if (fb) fb.addEventListener("click", () => callApi("open_screenshots_dir").catch(() => {}));
   $("#copyBtn").addEventListener("click", () => copyText(currentResultText(), "Результат"));
   $("#translateBtn").addEventListener("click", translateCurrent);
   $("#clearBtn").addEventListener("click", () => {
@@ -723,6 +863,7 @@ async function onReady() {
     setStatus("Python-API не подключён — демонстрационный режим", "error");
     toast("Запустите программу через Raspoznavatel.exe", "error", 6000);
     initSettings();
+    initTranslationDirs();
     return;
   }
   try {
@@ -730,11 +871,13 @@ async function onReady() {
     state.settings.ocr_langs = "auto";
     initSettings();
     updateHotkeysStatus();
+    initTranslationDirs();
+    await loadTranslationPairs();
     const info = await callApi("get_info");
     $("#versionLabel").textContent = info.version;
     setStatus(`Готов к работе · ${formatHotkey(state.settings.hotkey_recognize)} — распознать · ${formatHotkey(state.settings.hotkey_screenshot)} — скриншот`);
     callApi("preload_translator").catch(() => {});
-    pyapi().js_log("Интерфейс v2.2 загружен").catch(() => {});
+    pyapi().js_log("Интерфейс v2.3 загружен").catch(() => {});
   } catch (e) {
     setStatus("Ошибка инициализации: " + e, "error");
   }

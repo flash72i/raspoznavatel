@@ -70,6 +70,7 @@ DEFAULT_SETTINGS = {
     "hotkey_screenshot": "ctrl+shift+p",    # комбинация скриншота области
     "autostart": False,                     # запуск при включении ПК (в трей)
     "preload": True,                        # прогревать модель перевода в фоне
+    "sound": True,                          # звуки-уведомления («бульк» на готово)
 }
 
 # ---------------------------------------------------------------------------
@@ -173,6 +174,7 @@ class Api:
         self._tray = None                    # иконка в трее (создаётся из main)
         self._busy = False
         self._preload_started = False   # прогрев перевода запускается один раз
+        self._zoom_win = None           # отдельное окно-лупа для картинки
         self._settings = self._load_settings()
         if window is not None:
             self.attach_window(window)
@@ -256,6 +258,14 @@ class Api:
 
     def _status(self, text: str):
         self._js(f"window.onStatus && window.onStatus({json.dumps(text)})")
+
+    def _progress(self, pct, text: str = ""):
+        """Шкала прогресса в интерфейсе (0-100 + подпись стадии)."""
+        try:
+            pct = max(0, min(100, int(pct)))
+        except (TypeError, ValueError):
+            pct = 0
+        self._js(f"window.onProgress && window.onProgress({pct}, {json.dumps(text)})")
 
     def _error(self, text: str):
         log.error(text)
@@ -517,7 +527,7 @@ class Api:
                 val = norm
                 if val != self._settings.get(key):
                     changed_hotkeys = True
-            elif key in ("auto_copy", "smart_hotkey", "preload", "autostart"):
+            elif key in ("auto_copy", "smart_hotkey", "preload", "autostart", "sound"):
                 val = bool(val)
                 if key == "autostart" and val != self._settings.get("autostart"):
                     autostart_changed = True
@@ -778,6 +788,55 @@ class Api:
         return {"ok": True, **result}
 
     # ------------------------------------------------------------------
+    # Автоматическое распознавание файла (QR → текст) — v2.3
+    # ------------------------------------------------------------------
+
+    @safe_call
+    def recognize_file(self, path: str) -> dict:
+        """
+        Автораспознавание добавленного изображения БЕЗ нажатия кнопок:
+        сначала ищет QR/штрих-коды (быстро), если их нет — распознаёт текст
+        (автоязык, смешанные языки поддерживаются). Весь путь — с прогрессом.
+        """
+        if not path or not os.path.isfile(path):
+            return {"ok": False, "error": f"Файл не найден: {path}"}
+        if self._busy:
+            return {"ok": False, "error": "Операция уже выполняется.", "cancelled": False}
+        self._busy = True
+        try:
+            self._progress(3, "Смотрю, что на изображении…")
+            try:
+                codes = qr_reader.decode_image(path)
+            except Exception as exc:
+                log.warn(f"QR-проверка не удалась: {exc}")
+                codes = {"count": 0, "results": []}
+            if codes.get("count", 0) > 0:
+                self._progress(100, "")
+                texts = "; ".join(r["text"][:60] for r in codes["results"])
+                log.ok(f"Авто: найдено кодов {codes['count']} — {texts}")
+                self._status(f"Найдено кодов: {codes['count']}.")
+                return {"ok": True, "mode": "qr",
+                        "count": codes["count"], "results": codes["results"]}
+            self._progress(12, "Кодов нет — распознаю текст…")
+
+            def cb(pct, txt):
+                self._progress(12 + int(int(pct) * 0.86), txt)
+
+            result = ocr.ocr_image(path, self._settings.get("ocr_langs"), progress_cb=cb)
+            self._progress(100, "")
+            n = len(result.get("text", "").strip())
+            if n == 0:
+                log.warn("Авто: текст на изображении не найден")
+                self._status("Текст на изображении не найден.")
+            else:
+                det = f", языки: {result.get('detected')}" if result.get("detected") else ""
+                self._status(f"Распознано символов: {n}, уверенность {result.get('confidence')}%{det}.")
+            return {"ok": True, "mode": "ocr", **result}
+        finally:
+            self._busy = False
+            self._progress(100, "")
+
+    # ------------------------------------------------------------------
     # OCR
     # ------------------------------------------------------------------
 
@@ -785,15 +844,19 @@ class Api:
     def ocr_image(self, path: str, langs=None) -> dict:
         use_langs = langs if langs is not None else self._settings.get("ocr_langs")
         if use_langs == "auto":
-            self._status("Определяю язык изображения…")
-        result = ocr.ocr_image(path, use_langs)
+            self._status("Определяю языки изображения…")
+
+        def cb(pct, txt):
+            self._progress(int(pct), txt)
+
+        result = ocr.ocr_image(path, use_langs, progress_cb=cb)
         n = len(result.get("text", "").strip())
         if n == 0:
             log.warn("Текст на изображении не найден")
             self._status("Текст на изображении не найден.")
         else:
             conf = result.get("confidence")
-            det = f", язык: {result.get('detected')}" if result.get("detected") else ""
+            det = f", языки: {result.get('detected')}" if result.get("detected") else ""
             self._status(f"Распознано символов: {n}, уверенность {conf}%{det}.")
         return {"ok": True, **result}
 
@@ -853,10 +916,17 @@ class Api:
             self._show_window_after_capture(hidden)
             if not shot:
                 return {"ok": False, "cancelled": True, "error": None}
-            result = ocr.ocr_image(shot["path"], self._settings.get("ocr_langs"))
+            self._progress(10, "Распознаю текст…")
+
+            def cb(pct, txt):
+                self._progress(10 + int(int(pct) * 0.85), txt)
+
+            result = ocr.ocr_image(shot["path"], self._settings.get("ocr_langs"), progress_cb=cb)
+            self._progress(100, "")
             return {"ok": True, "mode": "ocr", "shot": self._shot_info(shot), **result}
         finally:
             self._busy = False
+            self._progress(100, "")
 
     @safe_call
     def capture_and_decode_qr(self) -> dict:
@@ -870,10 +940,13 @@ class Api:
             self._show_window_after_capture(hidden)
             if not shot:
                 return {"ok": False, "cancelled": True, "error": None}
+            self._progress(30, "Ищу QR и штрих-коды…")
             result = qr_reader.decode_image(shot["path"])
+            self._progress(100, "")
             return {"ok": True, "mode": "qr", "shot": self._shot_info(shot), **result}
         finally:
             self._busy = False
+            self._progress(100, "")
 
     @safe_call
     def capture_smart(self) -> dict:
@@ -887,15 +960,24 @@ class Api:
             self._show_window_after_capture(hidden)
             if not shot:
                 return {"ok": False, "cancelled": True, "error": None}
+            self._progress(10, "Ищу QR и штрих-коды…")
             codes = qr_reader.decode_image(shot["path"])
             shot_info = self._shot_info(shot)
             if codes.get("count", 0) > 0:
+                self._progress(100, "")
                 log.ok(f"Умный режим: найден QR ({codes['count']} шт.)")
                 return {"ok": True, "mode": "qr", "shot": shot_info, **codes}
-            text = ocr.ocr_image(shot["path"], self._settings.get("ocr_langs"))
+            self._progress(20, "Кодов нет — распознаю текст…")
+
+            def cb(pct, txt):
+                self._progress(20 + int(int(pct) * 0.75), txt)
+
+            text = ocr.ocr_image(shot["path"], self._settings.get("ocr_langs"), progress_cb=cb)
+            self._progress(100, "")
             return {"ok": True, "mode": "ocr", "shot": shot_info, **text}
         finally:
             self._busy = False
+            self._progress(100, "")
 
     # ------------------------------------------------------------------
     # Скриншоты (как в FastStone Capture)
@@ -939,7 +1021,9 @@ class Api:
                     config.get_screenshots_dir(),
                     "Скриншот_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".png"
                 )
+            self._progress(80, "Сохраняю скриншот…")
             shutil.copyfile(shot["path"], dst)
+            self._progress(100, "")
             log.ok(f"Скриншот сохранён: {dst}")
             self._status(f"Скриншот сохранён: {dst}")
             return {
@@ -960,17 +1044,35 @@ class Api:
         return {"ok": True, "path": d}
 
     # ------------------------------------------------------------------
-    # Перевод
+    # Перевод (v2.3: выбор направления «с какого на какой»)
     # ------------------------------------------------------------------
 
     @safe_call
-    def translate_text(self, text: str) -> dict:
+    def get_translation_pairs(self) -> dict:
+        """Доступные направления перевода (по моделям в resources/argos)."""
+        pairs = translator.available_pairs()
+        names = config.LANG_NAMES
+        out = [{
+            "src": s, "tgt": t,
+            "label": f"{names.get(s, s.upper())} → {names.get(t, t.upper())}",
+        } for s, t in pairs]
+        return {"ok": True, "pairs": out}
+
+    @safe_call
+    def translate_text(self, text: str, src: str = "en", tgt: str = "ru") -> dict:
         if not (text or "").strip():
             return {"translated": "", "ok": False, "error": "Пустой текст для перевода."}
-        self._status("Идёт перевод (офлайн, первый запуск может занять ~30 с)…")
-        result = translator.translate_en_to_ru(text)
+        src = (src or "en").strip().lower()
+        tgt = (tgt or "ru").strip().lower()
+        self._status(f"Перевод {src.upper()} → {tgt.upper()} (офлайн, первая загрузка модели ~30 с)…")
+
+        def cb(pct, txt):
+            self._progress(int(pct), txt or f"Перевод {src.upper()} → {tgt.upper()}…")
+
+        result = translator.translate(text, src, tgt, progress_cb=cb)
+        self._progress(100, "")
         if result.get("ok"):
-            log.ok(f"Перевод готов ({len(result['translated'])} симв.)")
+            log.ok(f"Перевод {src}→{tgt} готов ({len(result['translated'])} симв.)")
             self._status("Перевод завершён.")
         return result
 
@@ -1026,6 +1128,207 @@ class Api:
         else:
             log.info(f"(не Windows) папка данных: {d}")
         return {"ok": True, "path": d}
+
+
+    # ------------------------------------------------------------------
+    # Окно-лупа: клик по превью открывает картинку в ОТДЕЛЬНОМ окне
+    # (появляется над картинкой, плавно увеличивается, колесо = зум,
+    #  перетаскивание = двигать окно, Esc/✕ = закрыть)
+    # ------------------------------------------------------------------
+
+    @safe_call
+    def open_image_zoom(self, path: str, x: int = 0, y: int = 0) -> dict:
+        if not path or not os.path.isfile(path):
+            return {"ok": False, "error": f"Файл не найден: {path}"}
+        try:
+            import webview
+        except Exception as exc:
+            return {"ok": False, "error": f"Оконный компонент недоступен: {exc}"}
+
+        import base64
+        # data-URL картинки: маленькие файлы — как есть, большие уменьшаем
+        try:
+            size = os.path.getsize(path)
+            pil = screen_capture._get_pil()
+            nat_w = nat_h = 0
+            if pil is not None:
+                with pil[0].open(path) as im0:
+                    nat_w, nat_h = im0.size
+            if size <= 6 * 1024 * 1024:
+                with open(path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("ascii")
+                ext = os.path.splitext(path)[1].lower().lstrip(".") or "png"
+                mime = "jpeg" if ext in ("jpg", "jpeg") else ext
+                data_url = f"data:image/{mime};base64,{b64}"
+            elif pil is not None:
+                import io
+                with pil[0].open(path) as im0:
+                    im0 = im0.convert("RGB")
+                    im0.thumbnail((2400, 2400))
+                    buf = io.BytesIO()
+                    im0.save(buf, "JPEG", quality=88)
+                data_url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+            else:
+                return {"ok": False, "error": "Файл слишком большой, а Pillow недоступен."}
+        except Exception as exc:
+            return {"ok": False, "error": f"Не удалось прочитать изображение: {exc}"}
+
+        # размер окна — по пропорциям картинки, не больше 980×700
+        w, h = 860, 620
+        if nat_w and nat_h:
+            k = min(940.0 / nat_w, 640.0 / nat_h, 1.5)
+            w = max(360, min(980, int(nat_w * k) + 40))
+            h = max(280, min(700, int(nat_h * k) + 96))
+
+        # позиция: НАД точкой клика (а не по центру экрана)
+        px = max(0, int(x) - 60) if x else None
+        py = max(0, int(y) - h - 30) if y else None
+
+        name = os.path.basename(path)
+        html = (ZOOM_VIEWER_HTML
+                .replace("__SRC__", data_url)
+                .replace("__NAME__", name.replace("<", "&lt;").replace(">", "&gt;")))
+
+        # предыдущее окно-лупу закрываем
+        self.close_zoom_window(quiet=True)
+
+        zapi = _ZoomApi()
+        kwargs = dict(
+            title=f"Лупа — {name}",
+            html=html,
+            width=w, height=h,
+            frameless=True,
+            easy_drag=True,      # перетаскивание окна мышью за любое место
+            on_top=True,         # поверх главного окна
+            resizable=True,
+            background_color="#0a0f1e",
+            js_api=zapi,
+        )
+        if px is not None:
+            kwargs["x"] = px
+            kwargs["y"] = py
+        try:
+            win = webview.create_window(**kwargs)
+            zapi._win = win
+            self._zoom_win = win
+            log.ok(f"Окно-лупа открыто: {name} ({w}×{h}, позиция {px},{py})")
+            return {"ok": True}
+        except Exception as exc:
+            log.error(f"Не удалось открыть окно-лупу: {exc}")
+            return {"ok": False, "error": str(exc)}
+
+    @safe_call
+    def close_zoom_window(self, quiet: bool = False) -> dict:
+        """Закрывает окно-лупу (если открыто)."""
+        win = self._zoom_win
+        self._zoom_win = None
+        if win is None:
+            return {"ok": True}
+
+        def _destroy():
+            time.sleep(0.15)
+            try:
+                win.destroy()
+            except Exception:
+                pass
+        threading.Thread(target=_destroy, daemon=True).start()
+        return {"ok": True}
+
+
+ZOOM_VIEWER_HTML = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: #0a0f1e;
+    font-family: 'Segoe UI', system-ui, sans-serif; color: #cdd6f4;
+    -webkit-user-select: none; user-select: none; }
+  #bar { position: fixed; top: 0; left: 0; right: 0; height: 34px; z-index: 10;
+    display: flex; align-items: center; gap: 8px; padding: 0 10px;
+    background: linear-gradient(180deg, rgba(10,15,30,.96), rgba(10,15,30,.75));
+    border-bottom: 1px solid rgba(120,140,255,.14); font-size: 11.5px; }
+  #name { font-weight: 600; color: #e8ecff; max-width: 45%; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  #hint { color: #7f8bb5; font-size: 10.5px; flex: 1; text-align: right;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  #zoomPct { color: #22d3ee; font-weight: 700; min-width: 46px; text-align: right; }
+  #closeBtn { width: 26px; height: 26px; border: 0; border-radius: 7px; cursor: pointer;
+    background: rgba(255,93,108,.14); color: #ff8b96; font-size: 13px; line-height: 1;
+    transition: background .15s, transform .15s; }
+  #closeBtn:hover { background: rgba(255,93,108,.35); transform: scale(1.08); }
+  #stage { position: absolute; inset: 34px 0 0 0; display: flex;
+    align-items: center; justify-content: center; overflow: hidden; }
+  #img { max-width: 96%; max-height: 94%; object-fit: contain; cursor: grab;
+    transform: scale(1); transform-origin: center center;
+    transition: transform .14s cubic-bezier(.22,.9,.35,1.2), opacity .18s;
+    opacity: 0; border-radius: 6px; box-shadow: 0 14px 60px rgba(0,0,0,.6); }
+  #img.shown { opacity: 1; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span id="name">__NAME__</span>
+    <span id="hint">колесо = зум · двойной клик = 100% · тащить = двигать окно · Esc = закрыть</span>
+    <span id="zoomPct">100%</span>
+    <button id="closeBtn" title="Закрыть (Esc)">✕</button>
+  </div>
+  <div id="stage"><img id="img" src="__SRC__" alt=""></div>
+<script>
+  var scale = 1;
+  var img = document.getElementById('img');
+  var pct = document.getElementById('zoomPct');
+  function apply(){ img.style.transform = 'scale(' + scale + ')';
+    pct.textContent = Math.round(scale * 100) + '%'; }
+  window.addEventListener('wheel', function(e){
+    e.preventDefault();
+    var k = e.deltaY < 0 ? 1.16 : 1 / 1.16;
+    scale = Math.min(14, Math.max(0.15, scale * k));
+    apply();
+  }, {passive: false});
+  img.addEventListener('dblclick', function(){ scale = 1; apply(); });
+  img.addEventListener('load', function(){
+    img.classList.add('shown');
+    img.style.transform = 'scale(1)';
+  });
+  // плавное «наплывающее» появление: стартуем с 0.72
+  img.style.transform = 'scale(0.72)';
+  setTimeout(function(){ scale = 1; apply(); img.classList.add('shown'); }, 60);
+  function closeWin(){
+    try { window.pywebview.api.close_zoom(); } catch(e) { window.close(); }
+  }
+  document.getElementById('closeBtn').addEventListener('click', closeWin);
+  window.addEventListener('keydown', function(e){
+    if (e.key === 'Escape') closeWin();
+    if (e.key === '+' || e.key === '=') { scale = Math.min(14, scale * 1.2); apply(); }
+    if (e.key === '-') { scale = Math.max(0.15, scale / 1.2); apply(); }
+    if (e.key === '0') { scale = 1; apply(); }
+  });
+</script>
+</body>
+</html>
+"""
+
+
+class _ZoomApi:
+    """Мини-API окна-лупы (js_api второго окна)."""
+
+    def __init__(self):
+        self._win = None
+
+    def close_zoom(self):
+        win = self._win
+        if win is None:
+            return {"ok": False}
+
+        def _destroy():
+            time.sleep(0.12)
+            try:
+                win.destroy()
+            except Exception:
+                pass
+        threading.Thread(target=_destroy, daemon=True).start()
+        return {"ok": True}
 
 
 def sys_executable() -> str:

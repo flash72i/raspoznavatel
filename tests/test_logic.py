@@ -265,6 +265,106 @@ log.info("триггер ротации")
 check("app.log.old создан", os.path.isfile(log._log_file + ".old"))
 check("новый app.log маленький", os.path.getsize(log._log_file) < 10_000)
 
+print("\n--- 9. v2.3: выбор языков OCR (смешанный текст) ---")
+import ocr  # noqa: E402
+avail = ["rus", "eng", "chi_sim", "ukr", "deu", "fra"]
+cases_langs = [
+    # (пробы {lang:(text,conf)}, ожидаемый набор)
+    ({"rus": ("Привет мир текст", 92.0), "eng": ("", -1.0), "chi_sim": ("", -1.0)}, ["rus"]),
+    ({"rus": ("Hello Привет", 80.0), "eng": ("Hello world text", 88.0), "chi_sim": ("", -1.0)}, None),  # rus+eng (порядок по уверенности)
+    ({"rus": ("", -1.0), "eng": ("Hello world", 90.0), "chi_sim": ("你好世界测试", 85.0)}, None),        # eng+chi_sim
+    ({"rus": ("Привет", 60.0), "eng": ("Strasse Grüße", 70.0), "chi_sim": ("", -1.0)}, None),          # eng+deu(+rus?)
+]
+r1 = ocr.choose_langs(cases_langs[0][0], avail)
+check("чистая кириллица → ['rus']", r1 == ["rus"], str(r1))
+r2 = ocr.choose_langs(cases_langs[1][0], avail)
+check("смесь рус+англ → оба языка в наборе", set(r2) >= {"rus", "eng"}, str(r2))
+r3 = ocr.choose_langs(cases_langs[2][0], avail)
+check("англ+китайский → оба в наборе", set(r3) >= {"eng", "chi_sim"}, str(r3))
+r4 = ocr.choose_langs(cases_langs[3][0], avail)
+check("немецкая диакритика → deu в наборе", "deu" in r4, str(r4))
+r5 = ocr.choose_langs({"rus": ("", -1), "eng": ("", -1), "chi_sim": ("", -1)}, avail)
+check("пустые пробы → не пустой набор (fallback)", isinstance(r5, list) and len(r5) >= 1, str(r5))
+r6 = ocr.choose_langs({"rus": ("Привет мир текст", 92.0), "eng": ("Hello", 40.0),
+                       "chi_sim": ("你好世界测试", 62.0)}, avail)
+check("галлюцинация chi-пробы (62%) НЕ добавляет китайский", "chi_sim" not in r6, str(r6))
+r7 = ocr.choose_langs({"rus": ("", -1.0), "eng": ("", -1.0),
+                       "chi_sim": ("你好世界测试内容", 88.0)}, avail)
+check("настоящий китайский (88%) → chi_sim выбран", "chi_sim" in r7, str(r7))
+r8 = ocr.choose_langs({"rus": ("Привет", 85.0), "eng": ("Hello", 85.0),
+                       "chi_sim": ("你好世界", 80.0)}, avail)
+check("три письменности сразу → все три языка", set(r8) >= {"rus", "eng", "chi_sim"}, str(r8))
+check("набор не длиннее 3 языков", all(len(ocr.choose_langs(c[0], avail)) <= 3 for c in cases_langs))
+sc = ocr._script_counts("Привет Hello 你好")
+check("_script_counts: кириллица/латиница/CJK", sc == {"cyr": 6, "lat": 5, "cjk": 2}, str(sc))
+
+print("\n--- 10. v2.3: пары перевода (resources/argos) ---")
+import translator  # noqa: E402
+_fake_argos = os.path.join(TMP, "argos_fake")
+os.makedirs(_fake_argos, exist_ok=True)
+for nm in ("translate-en_ru-1_9.argosmodel", "translate-ru_en-1_9.argosmodel", "мусор.txt"):
+    open(os.path.join(_fake_argos, nm), "wb").write(b"x")
+_old_argos = config.ARGOS_DIR
+config.ARGOS_DIR = _fake_argos
+try:
+    pairs = translator.available_pairs()
+    check("available_pairs находит en→ru и ru→en",
+          ("en", "ru") in pairs and ("ru", "en") in pairs, str(pairs))
+    check("мусорные файлы игнорируются", len(pairs) == 2, str(pairs))
+finally:
+    config.ARGOS_DIR = _old_argos
+
+a6, w6 = fresh_api()
+w6.events.loaded.set(); time.sleep(0.6)
+r = a6.get_translation_pairs()
+check("get_translation_pairs вернул структуру", r.get("ok") is True and isinstance(r.get("pairs"), list))
+
+print("\n--- 11. v2.3: recognize_file (QR → текст) ---")
+import qr_reader  # noqa: E402
+_img = os.path.join(TMP, "pic.png")
+with open(_img, "wb") as f:
+    f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+_orig_decode = qr_reader.decode_image
+_orig_ocr = api_mod.ocr.ocr_image
+a7, w7 = fresh_api()
+w7.events.loaded.set(); time.sleep(0.6)
+# сценарий 1: найден QR
+qr_reader.decode_image = lambda p: {"count": 1, "results": [{"type": "QR-CODE", "text": "https://x.y", "engine": "t"}]}
+r = a7.recognize_file(_img)
+check("QR найден → mode=qr, без OCR", r.get("ok") is True and r.get("mode") == "qr" and r.get("count") == 1)
+# сценарий 2: QR нет → OCR
+qr_reader.decode_image = lambda p: {"count": 0, "results": []}
+api_mod.ocr.ocr_image = lambda p, langs=None, progress_cb=None: {"text": "Привет", "lang": "rus", "confidence": 90, "words": 1, "detected": "rus"}
+r = a7.recognize_file(_img)
+check("QR нет → mode=ocr с текстом", r.get("ok") is True and r.get("mode") == "ocr" and r.get("text") == "Привет")
+prog = [c for c in w7.js_calls if "onProgress" in c]
+check("прогресс отправлялся в интерфейс (onProgress)", len(prog) >= 2, str(len(prog)))
+# сценарий 3: файла нет
+r = a7.recognize_file(os.path.join(TMP, "no-such-file.png"))
+check("нет файла → ok=False с ошибкой", r.get("ok") is False and bool(r.get("error")))
+qr_reader.decode_image = _orig_decode
+api_mod.ocr.ocr_image = _orig_ocr
+
+print("\n--- 12. v2.3: направление перевода + звук в настройках ---")
+_captured = {}
+def _fake_translate(text, src="en", tgt="ru", progress_cb=None):
+    _captured.update({"text": text, "src": src, "tgt": tgt})
+    return {"translated": "МОК", "ok": True, "error": None, "src": src, "tgt": tgt}
+_orig_tr = api_mod.translator.translate
+api_mod.translator.translate = _fake_translate
+a8, w8 = fresh_api()
+w8.events.loaded.set(); time.sleep(0.6)
+r = a8.translate_text("Hello", "ru", "en")
+check("translate_text передал пару ru→en", _captured.get("src") == "ru" and _captured.get("tgt") == "en", str(_captured))
+check("результат перевода возвращён", r.get("ok") is True and r.get("translated") == "МОК")
+api_mod.translator.translate = _orig_tr
+r = a8.save_settings({**a8._settings, "sound": False})
+check("настройка звука сохранена (sound=False)", r.get("ok") is True and r.get("sound") is False)
+r = a8.save_settings({**a8._settings, "sound": True})
+check("звук снова включён", r.get("ok") is True and r.get("sound") is True)
+r = a8.open_image_zoom(os.path.join(TMP, "no-such.png"))
+check("open_image_zoom: нет файла → ok=False", r.get("ok") is False)
+
 print(f"\nИТОГ: {PASS} пройдено, {FAIL} провалено")
 sys.exit(0 if FAIL == 0 else 1)
 
