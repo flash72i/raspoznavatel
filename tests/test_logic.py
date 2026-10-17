@@ -365,6 +365,27 @@ check("звук снова включён", r.get("ok") is True and r.get("sound
 r = a8.open_image_zoom(os.path.join(TMP, "no-such.png"))
 check("open_image_zoom: нет файла → ok=False", r.get("ok") is False)
 
+print("\n--- 13. v2.3.1: папка скриншотов (настройка/выбор/сброс) ---")
+a9, w9 = fresh_api()
+w9.events.loaded.set(); time.sleep(0.6)
+r = a9.save_settings({**a9._settings, "screenshots_dir": os.path.join(TMP, "нет-такой-папки")})
+check("несуществующая папка отклонена", r.get("ok") is False and "не существует" in str(r.get("error")))
+custom_dir = os.path.join(TMP, "my_shots")
+os.makedirs(custom_dir, exist_ok=True)
+r = a9.save_settings({**a9._settings, "screenshots_dir": custom_dir})
+check("существующая папка принята", r.get("ok") is True and r.get("screenshots_dir") == custom_dir)
+check("_effective_screenshots_dir = своя папка", a9._effective_screenshots_dir() == custom_dir)
+w9.dialog_result = (custom_dir,)
+r = a9.choose_screenshots_dir()
+check("choose_screenshots_dir вернул ok+path", r.get("ok") is True and r.get("path") == custom_dir)
+check("диалог выбора ПАПКИ (dialog_type=20)", w9.dialog_kwargs.get("dialog_type") == 20,
+      str(w9.dialog_kwargs.get("dialog_type")))
+r = a9.reset_screenshots_dir()
+check("reset_screenshots_dir → по умолчанию",
+      r.get("ok") is True and a9._settings.get("screenshots_dir") == "")
+check("после сброса effective = Screenshots рядом с программой",
+      a9._effective_screenshots_dir() == config.get_screenshots_dir())
+
 print(f"\nИТОГ: {PASS} пройдено, {FAIL} провалено")
 sys.exit(0 if FAIL == 0 else 1)
 

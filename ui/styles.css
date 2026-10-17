@@ -478,3 +478,32 @@ body { display: flex; flex-direction: column; }
   transition: background .15s, transform .15s; flex: none; }
 .status-folder:hover { background: rgba(34, 211, 238, .3); transform: translateY(-1px); }
 .status-folder svg { width: 14px; height: 14px; }
+
+/* ==========================================================================
+   v2.3.1 — лоадер НЕ блокирует окно; прогресс в статус-баре; папка скриншотов
+   ========================================================================== */
+
+/* Лоадер: чисто визуальный (клики проходят насквозь), начинается НИЖЕ
+   панели заголовка — окно можно двигать/сворачивать даже во время
+   распознавания. */
+.loader-overlay { inset: var(--titlebar-h) 0 0 0 !important; pointer-events: none !important; }
+.loader-overlay .loader-card { pointer-events: none; }
+
+/* Прогресс прямо в статус-баре (внизу) — как просил пользователь */
+.status-progress { display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto;
+  opacity: 0; transition: opacity .25s; pointer-events: none; }
+.status-progress.active { opacity: 1; }
+.status-progress-track { width: 130px; height: 6px; border-radius: 99px; overflow: hidden;
+  background: rgba(120, 140, 255, .14); border: 1px solid rgba(120, 140, 255, .2); }
+.status-progress-fill { height: 100%; width: 0%; border-radius: 99px;
+  background: linear-gradient(90deg, #22d3ee, #8b5cf6 55%, #e879f9);
+  box-shadow: 0 0 8px rgba(34, 211, 238, .5);
+  transition: width .3s cubic-bezier(.22, .9, .35, 1.05); }
+.status-progress-pct { font-size: 10.5px; font-weight: 700; color: #22d3ee; min-width: 34px; }
+
+/* Настройка папки скриншотов */
+.shots-dir-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.shots-dir-path { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 9px;
+  background: rgba(6, 10, 22, .7); border: 1px solid var(--stroke); color: #9fb0e8;
+  font-size: 10.5px; font-family: 'Consolas', monospace; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }

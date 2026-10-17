@@ -1,6 +1,6 @@
 ﻿; installer.nsi — установщик «Распознаватель» (NSIS 3, Unicode)
 ; Сборка:  makensis installer.nsi   (или build_installer.sh)
-; Результат: dist/Raspoznavatel-2.3.0-Setup.exe
+; Результат: dist/Raspoznavatel-2.3.1-Setup.exe
 Unicode true
 
 !include "MUI2.nsh"
@@ -8,18 +8,18 @@ Unicode true
 !include "Sections.nsh"
 
 Name "Распознаватель"
-OutFile "dist\Raspoznavatel-2.3.0-Setup.exe"
+OutFile "dist\Raspoznavatel-2.3.1-Setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Raspoznavatel"
 InstallDirRegKey HKCU "Software\Raspoznavatel" "InstallDir"
 RequestExecutionLevel user          ; БЕЗ прав администратора
 SetCompressor /SOLID lzma
 
 ; --- метаданные установщика ---
-VIProductVersion "2.3.0.0"
+VIProductVersion "2.3.1.0"
 VIAddVersionKey "ProductName"     "Распознаватель"
-VIAddVersionKey "FileDescription" "Установщик «Распознаватель» 2.3.0"
-VIAddVersionKey "FileVersion"     "2.3.0"
-VIAddVersionKey "ProductVersion"  "2.3.0"
+VIAddVersionKey "FileDescription" "Установщик «Распознаватель» 2.3.1"
+VIAddVersionKey "FileVersion"     "2.3.1"
+VIAddVersionKey "ProductVersion"  "2.3.1"
 VIAddVersionKey "LegalCopyright"  "Open source (flash72i)"
 VIAddVersionKey "Comments"        "QR, штрих-коды, OCR, скриншоты, офлайн-перевод EN->RU"
 
@@ -56,8 +56,8 @@ Section "Программа (обязательно)" SecMain
 
   ; запись для «Установка и удаление программ» (только HKCU — без админ-прав)
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "DisplayName"     "Распознаватель 2.3.0"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "DisplayVersion"  "2.3.0"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "DisplayName"     "Распознаватель 2.3.1"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "DisplayVersion"  "2.3.1"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "DisplayIcon"     "$INSTDIR\Raspoznavatel.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "Publisher"       "flash72i"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Raspoznavatel" "UninstallString" "$INSTDIR\Uninstall.exe"

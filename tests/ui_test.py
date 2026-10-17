@@ -36,8 +36,8 @@ window.addEventListener('unhandledrejection', e => window.__errors.push('reject:
 const TINY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 const responses = {
-  get_info: {name:'Распознаватель', version:'2.3.0', frozen:true, data_dir:'C:/Raspoznavatel/Raspoznavatel_data', screenshots_dir:'C:/Raspoznavatel/Screenshots'},
-  get_settings: {ocr_langs:'auto', auto_copy:true, smart_hotkey:true, hotkey_recognize:'ctrl+shift+s', hotkey_screenshot:'ctrl+shift+p', autostart:false, preload:true, sound:true},
+  get_info: {name:'Распознаватель', version:'2.3.1', frozen:true, data_dir:'C:/Raspoznavatel/Raspoznavatel_data', screenshots_dir:'C:/Raspoznavatel/Screenshots'},
+  get_settings: {ocr_langs:'auto', auto_copy:true, smart_hotkey:true, hotkey_recognize:'ctrl+shift+s', hotkey_screenshot:'ctrl+shift+p', autostart:false, preload:true, sound:true, screenshots_dir:''},
   save_settings: (args) => Object.assign({ok: true}, args[0]),
   get_available_langs: [{code:'rus',name:'Русский'},{code:'eng',name:'Английский'},{code:'deu',name:'Немецкий'}],
   pick_image: {ok:true, path:'C:/test/img.png', name:'img.png', base64:TINY_PNG},
@@ -66,6 +66,8 @@ const responses = {
   preload_translator: {ok:true},
   open_data_dir: {ok:true, path:'C:/data'},
   open_screenshots_dir: {ok:true, path:'C:/shots'},
+  choose_screenshots_dir: {ok:true, path:'C:/MyShots', default:'C:/Raspoznavatel/Screenshots'},
+  reset_screenshots_dir: {ok:true, path:'C:/Raspoznavatel/Screenshots', default:'C:/Raspoznavatel/Screenshots'},
   win_minimize: {ok:true, via:'win32'},
   win_maximize_toggle: {ok:true, maximized:true, via:'win32'},
   win_close: {ok:true},
@@ -109,6 +111,22 @@ with sync_playwright() as p:
     page.click("#btnMax"); page.wait_for_timeout(300)
     check("кнопка «развернуть» вызывает win_maximize_toggle", calls("win_maximize_toggle") == 1)
 
+    # --- 1б. v2.3.1: значок папки виден СРАЗУ; лоадер не блокирует; прогресс в статус-баре ---
+    check("значок папки скриншотов виден сразу", page.is_visible("#statusFolderBtn"))
+    page.evaluate("showLoader('проверка блокировки')")
+    page.wait_for_timeout(300)
+    page.click("#settingsBtn"); page.wait_for_timeout(600)   # кликабельно ПОД лоадером?
+    check("лоадер НЕ блокирует интерфейс (настройки открылись под ним)",
+          page.evaluate("document.querySelector('#settingsDrawer').classList.contains('open')"))
+    page.click("#drawerClose"); page.wait_for_timeout(300)
+    page.evaluate("window.onProgress(66, 'стадия X')")
+    page.wait_for_timeout(350)
+    sp = page.evaluate("document.querySelector('#statusProgressFill').style.width")
+    sp_active = page.evaluate("document.querySelector('#statusProgress').classList.contains('active')")
+    check("прогресс виден В СТАТУС-БАРЕ (66%)", sp == "66%" and sp_active, f"{sp} active={sp_active}")
+    page.evaluate("hideLoader(); window.onProgress(-1, '')")
+    page.wait_for_timeout(250)
+
     # --- 2. Загрузка изображения + АВТОраспознавание ---
     page.click("#pickBtn"); page.wait_for_timeout(2600)
     check("«Загрузить изображение» → pick_image", calls("pick_image") == 1)
@@ -118,7 +136,7 @@ with sync_playwright() as p:
     check("распознанный текст сразу в поле", "Hello world" in val, val[:40])
     check("кнопки «Распознать текст»/«Найти QR» убраны",
           page.evaluate("!document.querySelector('#runOcrBtn') && !document.querySelector('#runQrBtn')"))
-    check("версия 2.3.0 в интерфейсе", page.inner_text("#versionLabel") == "2.3.0",
+    check("версия 2.3.1 в интерфейсе", page.inner_text("#versionLabel") == "2.3.1",
           page.inner_text("#versionLabel"))
 
     # --- 3. Авто-режим QR (путь с 'qr' → мок вернёт коды) ---
@@ -180,6 +198,14 @@ with sync_playwright() as p:
     page.click("label:has(#setSound)"); page.wait_for_timeout(400)
     snd = page.evaluate("window.__calls.filter(c=>c.m==='save_settings').slice(-1)[0].args[0]")
     check("переключатель звука → save_settings c sound=false", '"sound":false' in snd, snd[-120:])
+    page.click("#chooseShotsDirBtn"); page.wait_for_timeout(400)
+    check("«Выбрать папку…» → choose_screenshots_dir", calls("choose_screenshots_dir") == 1)
+    shots = page.inner_text("#shotsDirPath")
+    check("новая папка показана в настройках", "C:/MyShots" in shots, shots[:60])
+    page.click("#resetShotsDirBtn"); page.wait_for_timeout(400)
+    check("«По умолчанию» → reset_screenshots_dir", calls("reset_screenshots_dir") == 1)
+    shots2 = page.inner_text("#shotsDirPath")
+    check("сброс папки показан", "по умолчанию" in shots2.lower() or "Screenshots" in shots2, shots2[:60])
     page.click("#copyLogBtn"); page.wait_for_timeout(300)
     check("«Копировать журнал» → copy_to_clipboard", calls("copy_to_clipboard") >= 2)
     page.click("#checkBtn"); page.wait_for_timeout(800)

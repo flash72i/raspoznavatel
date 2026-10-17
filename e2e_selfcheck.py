@@ -275,6 +275,33 @@ def run(window, api):
                 json.dumps(rs, ensure_ascii=False)[:140])
         js_async("soundon", f"window.pywebview.api.save_settings(Object.assign({{}}, {json.dumps(base)}, {{sound: true}}))")
 
+        # --- 8в. v2.3.1: значок папки, прогресс в статус-баре, окно-лупа ---
+        vis = js("(function(){ var e=document.querySelector('#statusFolderBtn'); return e && !e.classList.contains('hidden') ? 1 : 0; })()")
+        rep.add("значок папки скриншотов виден в статус-баре сразу", vis == 1, str(vis))
+
+        js("window.onProgress(66, 'E2E stage')")
+        time.sleep(0.5)
+        sp = js("(function(){ var e=document.querySelector('#statusProgressFill'); return e ? e.style.width : ''; })()")
+        rep.add("прогресс отображается В СТАТУС-БАРЕ (66%)", sp == "66%", str(sp))
+        js("window.onProgress(-1, '')")
+
+        import base64 as _b64
+        png_path = os.path.join(config.TMP_DIR, "e2e_zoom.png")
+        try:
+            with open(png_path, "wb") as f:
+                f.write(_b64.b64decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8"
+                    "z8BQz0AEYBxVSF+FAP5FDvcfRYWgAAAAAElFTkSuQmCC"))
+            rz = js_async("zoom", f"window.pywebview.api.open_image_zoom({json.dumps(png_path)}, 300, 500)")
+            ok_zoom = isinstance(rz, dict) and rz.get("ok") is True
+            time.sleep(1.5)
+            js_async("zoomclose", "window.pywebview.api.close_zoom_window()")
+            time.sleep(0.5)
+            rep.add("окно-лупа открывается и закрывается (open_image_zoom)", ok_zoom,
+                    json.dumps(rz, ensure_ascii=False)[:140])
+        except Exception as exc:
+            rep.add("окно-лупа открывается и закрывается (open_image_zoom)", False, repr(exc))
+
         # --- 9. диагностика компонентов через мост ---
         rc = js_async("comp", "window.pywebview.api.check_components()", timeout=90)
         good = isinstance(rc, dict) and all(k in rc for k in ("ocr", "qr", "screen", "clipboard", "translator"))

@@ -163,7 +163,11 @@
 <footer class="status-bar glass">
   <span class="status-dot" id="statusDot"></span>
   <span class="status-text" id="statusText">Инициализация…</span>
-  <button class="status-folder hidden" id="statusFolderBtn" data-tooltip="Открыть папку, куда сохранён скриншот" aria-label="Открыть папку скриншотов">
+  <span class="status-progress" id="statusProgress">
+    <span class="status-progress-track"><span class="status-progress-fill" id="statusProgressFill"></span></span>
+    <span class="status-progress-pct" id="statusProgressPct">0%</span>
+  </span>
+  <button class="status-folder" id="statusFolderBtn" data-tooltip="Открыть папку, куда сохраняются скриншоты" aria-label="Открыть папку скриншотов">
     <svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z" fill="currentColor"/></svg>
   </button>
   <span class="status-hotkeys" id="statusHotkeys">Ctrl+Shift+S — распознать · Ctrl+Shift+P — скриншот</span>
@@ -199,6 +203,16 @@
         <button class="mini-btn ripple" id="soundTestBtn">🔊 Проверить звук</button>
         <button class="mini-btn ripple" id="openShotsBtn">📁 Папка скриншотов</button>
         <button class="mini-btn ripple" id="openDataBtn">📁 Папка данных</button>
+      </div>
+    </div>
+
+    <div class="settings-card glass-inner">
+      <h3>Скриншоты</h3>
+      <p class="card-hint">Куда сохранять снимки области. По умолчанию — папка <i>Screenshots</i> рядом с программой.</p>
+      <div class="shots-dir-row">
+        <span class="shots-dir-path" id="shotsDirPath" title="">не выбрана (по умолчанию)</span>
+        <button class="mini-btn ripple" id="chooseShotsDirBtn">Выбрать папку…</button>
+        <button class="mini-btn ripple" id="resetShotsDirBtn">По умолчанию</button>
       </div>
     </div>
 

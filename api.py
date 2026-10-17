@@ -58,8 +58,9 @@ IMAGE_FILTER = (
     "Все файлы (*.*)",
 )
 
-# Коды диалогов pywebview (webview.OPEN_DIALOG / SAVE_DIALOG)
+# Коды диалогов pywebview (webview.OPEN_DIALOG / FOLDER_DIALOG / SAVE_DIALOG)
 OPEN_DIALOG = 10
+FOLDER_DIALOG = 20
 SAVE_DIALOG = 30
 
 DEFAULT_SETTINGS = {
@@ -71,6 +72,7 @@ DEFAULT_SETTINGS = {
     "autostart": False,                     # запуск при включении ПК (в трей)
     "preload": True,                        # прогревать модель перевода в фоне
     "sound": True,                          # звуки-уведомления («бульк» на готово)
+    "screenshots_dir": "",                  # своя папка скриншотов ("" = Screenshots рядом с программой)
 }
 
 # ---------------------------------------------------------------------------
@@ -295,6 +297,14 @@ class Api:
         except OSError as exc:
             log.error(f"Не удалось сохранить настройки: {exc}")
 
+    def _effective_screenshots_dir(self) -> str:
+        """Папка для скриншотов: своя из настроек (если задана и существует),
+        иначе Screenshots рядом с программой."""
+        custom = str(self._settings.get("screenshots_dir") or "").strip()
+        if custom and os.path.isdir(custom):
+            return custom
+        return config.get_screenshots_dir()
+
     # ------------------------------------------------------------------
     # Win32-управление окном (основной путь — надёжнее pywebview)
     # ------------------------------------------------------------------
@@ -486,7 +496,7 @@ class Api:
             "version": config.APP_VERSION,
             "frozen": config.is_frozen(),
             "data_dir": config.user_data_dir(),
-            "screenshots_dir": config.get_screenshots_dir(),
+            "screenshots_dir": self._effective_screenshots_dir(),
         }
 
     @safe_call
@@ -529,6 +539,12 @@ class Api:
                     changed_hotkeys = True
             elif key in ("auto_copy", "smart_hotkey", "preload", "autostart", "sound"):
                 val = bool(val)
+            elif key == "screenshots_dir":
+                val = str(val or "").strip()
+                if val and not os.path.isdir(val):
+                    return {"ok": False,
+                            "error": f"Папка скриншотов не существует: {val}",
+                            "settings": dict(self._settings)}
                 if key == "autostart" and val != self._settings.get("autostart"):
                     autostart_changed = True
             pending[key] = val
@@ -1002,7 +1018,7 @@ class Api:
                     suggested = "Скриншот_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".png"
                     dst = self._window.create_file_dialog(
                         SAVE_DIALOG,
-                        directory=config.get_screenshots_dir(),
+                        directory=self._effective_screenshots_dir(),
                         save_filename=suggested,
                         file_types=("PNG (*.png)",),
                     )
@@ -1018,7 +1034,7 @@ class Api:
                     dst += ".png"
             else:
                 dst = os.path.join(
-                    config.get_screenshots_dir(),
+                    self._effective_screenshots_dir(),
                     "Скриншот_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".png"
                 )
             self._progress(80, "Сохраняю скриншот…")
@@ -1035,8 +1051,42 @@ class Api:
             self._busy = False
 
     @safe_call
-    def open_screenshots_dir(self) -> dict:
+    def choose_screenshots_dir(self) -> dict:
+        """Диалог выбора папки для скриншотов; результат сразу сохраняется."""
+        try:
+            picked = self._window.create_file_dialog(
+                FOLDER_DIALOG,
+                directory=self._effective_screenshots_dir(),
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"Диалог выбора папки не открылся: {exc}"}
+        if not picked:
+            log.info("Выбор папки скриншотов отменён")
+            return {"ok": False, "cancelled": True, "error": None}
+        if isinstance(picked, (list, tuple)):
+            picked = picked[0]
+        picked = str(picked)
+        if not os.path.isdir(picked):
+            return {"ok": False, "error": f"Это не папка: {picked}"}
+        self._settings["screenshots_dir"] = picked
+        self._save_settings()
+        log.ok(f"Папка скриншотов изменена: {picked}")
+        self._status(f"Скриншоты будут сохраняться в: {picked}")
+        return {"ok": True, "path": picked, "default": config.get_screenshots_dir()}
+
+    @safe_call
+    def reset_screenshots_dir(self) -> dict:
+        """Вернуть папку скриншотов по умолчанию (рядом с программой)."""
+        self._settings["screenshots_dir"] = ""
+        self._save_settings()
         d = config.get_screenshots_dir()
+        log.ok(f"Папка скриншотов сброшена: {d}")
+        self._status(f"Скриншоты снова сохраняются в: {d}")
+        return {"ok": True, "path": d, "default": d}
+
+    @safe_call
+    def open_screenshots_dir(self) -> dict:
+        d = self._effective_screenshots_dir()
         if os.name == "nt":
             os.startfile(d)  # noqa: S606
         else:
@@ -1197,8 +1247,11 @@ class Api:
             title=f"Лупа — {name}",
             html=html,
             width=w, height=h,
+            min_size=(340, 240),
             frameless=True,
-            easy_drag=True,      # перетаскивание окна мышью за любое место
+            easy_drag=False,     # перетаскивание окна — только за верхнюю панель
+            draggable=False,     # ВАЖНО: гасит нативный HTML5-drag картинок,
+                                 # иначе WebView2 перехватывает мышь и окно не сдвинуть
             on_top=True,         # поверх главного окна
             resizable=True,
             background_color="#0a0f1e",
@@ -1244,66 +1297,144 @@ ZOOM_VIEWER_HTML = """<!DOCTYPE html>
   html, body { height: 100%; overflow: hidden; background: #0a0f1e;
     font-family: 'Segoe UI', system-ui, sans-serif; color: #cdd6f4;
     -webkit-user-select: none; user-select: none; }
-  #bar { position: fixed; top: 0; left: 0; right: 0; height: 34px; z-index: 10;
-    display: flex; align-items: center; gap: 8px; padding: 0 10px;
-    background: linear-gradient(180deg, rgba(10,15,30,.96), rgba(10,15,30,.75));
-    border-bottom: 1px solid rgba(120,140,255,.14); font-size: 11.5px; }
-  #name { font-weight: 600; color: #e8ecff; max-width: 45%; overflow: hidden;
+  /* верхняя панель = зона перетаскивания ОКНА (pywebview-drag-region) */
+  #bar { position: fixed; top: 0; left: 0; right: 0; height: 36px; z-index: 10;
+    display: flex; align-items: center; gap: 6px; padding: 0 8px 0 12px;
+    background: linear-gradient(180deg, rgba(13,19,38,.97), rgba(10,15,30,.85));
+    border-bottom: 1px solid rgba(120,140,255,.16); font-size: 11.5px;
+    cursor: move; }
+  #name { font-weight: 600; color: #e8ecff; max-width: 34%; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
-  #hint { color: #7f8bb5; font-size: 10.5px; flex: 1; text-align: right;
+  #hint { color: #7f8bb5; font-size: 10px; flex: 1; text-align: center;
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  #zoomPct { color: #22d3ee; font-weight: 700; min-width: 46px; text-align: right; }
-  #closeBtn { width: 26px; height: 26px; border: 0; border-radius: 7px; cursor: pointer;
-    background: rgba(255,93,108,.14); color: #ff8b96; font-size: 13px; line-height: 1;
-    transition: background .15s, transform .15s; }
-  #closeBtn:hover { background: rgba(255,93,108,.35); transform: scale(1.08); }
-  #stage { position: absolute; inset: 34px 0 0 0; display: flex;
-    align-items: center; justify-content: center; overflow: hidden; }
-  #img { max-width: 96%; max-height: 94%; object-fit: contain; cursor: grab;
-    transform: scale(1); transform-origin: center center;
-    transition: transform .14s cubic-bezier(.22,.9,.35,1.2), opacity .18s;
-    opacity: 0; border-radius: 6px; box-shadow: 0 14px 60px rgba(0,0,0,.6); }
+  .vbtn { border: 0; border-radius: 7px; cursor: pointer; height: 24px; min-width: 26px;
+    padding: 0 6px; background: rgba(120,140,255,.12); color: #cdd6f4;
+    font-size: 12px; font-weight: 700; line-height: 1; transition: background .15s, transform .12s; }
+  .vbtn:hover { background: rgba(120,140,255,.3); transform: translateY(-1px); }
+  #zoomPct { color: #22d3ee; font-weight: 700; min-width: 48px; text-align: center;
+    font-size: 11px; cursor: pointer; }
+  #closeBtn { background: rgba(255,93,108,.14); color: #ff8b96; }
+  #closeBtn:hover { background: rgba(255,93,108,.4); }
+  #stage { position: absolute; inset: 36px 0 0 0; display: flex;
+    align-items: center; justify-content: center; overflow: hidden; cursor: grab; }
+  #stage:active { cursor: grabbing; }
+  #img { max-width: 94%; max-height: 92%; object-fit: contain; cursor: grab;
+    transform: translate(0px, 0px) scale(1); transform-origin: center center;
+    opacity: 0; border-radius: 6px; box-shadow: 0 14px 60px rgba(0,0,0,.6);
+    -webkit-user-drag: none; user-drag: none; touch-action: none; }
+  #img.smooth { transition: transform .14s cubic-bezier(.22,.9,.35,1.15), opacity .18s; }
   #img.shown { opacity: 1; }
+  #img.dragging { cursor: grabbing; }
 </style>
 </head>
 <body>
-  <div id="bar">
+  <div id="bar" class="pywebview-drag-region">
     <span id="name">__NAME__</span>
-    <span id="hint">колесо = зум · двойной клик = 100% · тащить = двигать окно · Esc = закрыть</span>
-    <span id="zoomPct">100%</span>
-    <button id="closeBtn" title="Закрыть (Esc)">✕</button>
+    <span id="hint">колесо = зум · тащить картинку = двигать · за панель = двигать окно · Esc = закрыть</span>
+    <button class="vbtn" id="zoomOut" title="Уменьшить (-)">−</button>
+    <span id="zoomPct" title="Сбросить (0 / двойной клик)">100%</span>
+    <button class="vbtn" id="zoomIn" title="Увеличить (+)">+</button>
+    <button class="vbtn" id="closeBtn" title="Закрыть (Esc)">✕</button>
   </div>
-  <div id="stage"><img id="img" src="__SRC__" alt=""></div>
+  <div id="stage"><img id="img" class="smooth" src="__SRC__" alt="" draggable="false"></div>
 <script>
-  var scale = 1;
+  var scale = 1, tx = 0, ty = 0;
   var img = document.getElementById('img');
+  var stage = document.getElementById('stage');
   var pct = document.getElementById('zoomPct');
-  function apply(){ img.style.transform = 'scale(' + scale + ')';
-    pct.textContent = Math.round(scale * 100) + '%'; }
-  window.addEventListener('wheel', function(e){
-    e.preventDefault();
-    var k = e.deltaY < 0 ? 1.16 : 1 / 1.16;
-    scale = Math.min(14, Math.max(0.15, scale * k));
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function apply() {
+    img.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+    pct.textContent = Math.round(scale * 100) + '%';
+  }
+  function zoomAt(cx, cy, k) {   // cx,cy — относительно ЦЕНТРА контейнера
+    var ns = clamp(scale * k, 0.1, 20);
+    var f = ns / scale;
+    tx = cx - f * (cx - tx);
+    ty = cy - f * (cy - ty);
+    scale = ns;
+    img.classList.add('smooth');
     apply();
+  }
+  function zoomCenter(k) { var r = stage.getBoundingClientRect();
+    zoomAt(0, 0, k); }
+  function reset() { scale = 1; tx = 0; ty = 0; img.classList.add('smooth'); apply(); }
+
+  /* --- зум колесом — к курсору --- */
+  window.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var r = stage.getBoundingClientRect();
+    var cx = e.clientX - r.left - r.width / 2;
+    var cy = e.clientY - r.top - r.height / 2;
+    zoomAt(cx, cy, e.deltaY < 0 ? 1.16 : 1 / 1.16);
   }, {passive: false});
-  img.addEventListener('dblclick', function(){ scale = 1; apply(); });
-  img.addEventListener('load', function(){
-    img.classList.add('shown');
-    img.style.transform = 'scale(1)';
+
+  /* --- панорамирование картинки мышью (тащить влево/вправо/вверх/вниз).
+         Слушаем ВЕСЬ stage (а не только img) — картинку можно тянуть,
+         ухватившись за любое место контентной области. --- */
+  var panning = false, px0 = 0, py0 = 0;
+  stage.addEventListener('mousedown', function(e) {
+    if (e.button !== 0) return;
+    e.preventDefault();               // гасим нативный drag картинки/выделение
+    panning = true; px0 = e.clientX; py0 = e.clientY;
+    img.classList.remove('smooth');   // движение — без задержки, 1:1 за мышью
+    img.classList.add('dragging');
   });
-  // плавное «наплывающее» появление: стартуем с 0.72
-  img.style.transform = 'scale(0.72)';
-  setTimeout(function(){ scale = 1; apply(); img.classList.add('shown'); }, 60);
-  function closeWin(){
-    try { window.pywebview.api.close_zoom(); } catch(e) { window.close(); }
+  window.addEventListener('mousemove', function(e) {
+    if (!panning) return;
+    tx += e.clientX - px0; ty += e.clientY - py0;
+    px0 = e.clientX; py0 = e.clientY;
+    apply();
+  });
+  window.addEventListener('mouseup', function() {
+    if (!panning) return;
+    panning = false; img.classList.remove('dragging');
+  });
+
+  /* --- страховка перетаскивания ОКНА за панель: дублируем механизм
+         pywebview (абсолютные координаты — двойной вызов безопасен) --- */
+  (function() {
+    var bar = document.getElementById('bar');
+    var d = null;
+    bar.addEventListener('mousedown', function(e) {
+      if (e.target.closest('button')) return;
+      if (!window.pywebview || !window.pywebview._jsApiCallback) return;
+      d = { cx: e.clientX, cy: e.clientY };
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', function(e) {
+      if (!d) return;
+      try { window.pywebview._jsApiCallback('pywebviewMoveWindow',
+        [e.screenX - d.cx, e.screenY - d.cy], 'move'); } catch (err) {}
+    });
+    window.addEventListener('mouseup', function() { d = null; });
+  })();
+
+  /* --- кнопки, клавиатура --- */
+  document.getElementById('zoomIn').addEventListener('click', function() { zoomCenter(1.25); });
+  document.getElementById('zoomOut').addEventListener('click', function() { zoomCenter(1 / 1.25); });
+  pct.addEventListener('click', reset);
+  img.addEventListener('dblclick', reset);
+  function closeWin() {
+    try { window.pywebview.api.close_zoom(); } catch (e) { try { window.close(); } catch (e2) {} }
   }
   document.getElementById('closeBtn').addEventListener('click', closeWin);
-  window.addEventListener('keydown', function(e){
-    if (e.key === 'Escape') closeWin();
-    if (e.key === '+' || e.key === '=') { scale = Math.min(14, scale * 1.2); apply(); }
-    if (e.key === '-') { scale = Math.max(0.15, scale / 1.2); apply(); }
-    if (e.key === '0') { scale = 1; apply(); }
+  window.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') { closeWin(); return; }
+    var step = e.shiftKey ? 160 : 60;
+    if (e.key === 'ArrowLeft')  { img.classList.remove('smooth'); tx += step; apply(); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { img.classList.remove('smooth'); tx -= step; apply(); e.preventDefault(); }
+    if (e.key === 'ArrowUp')    { img.classList.remove('smooth'); ty += step; apply(); e.preventDefault(); }
+    if (e.key === 'ArrowDown')  { img.classList.remove('smooth'); ty -= step; apply(); e.preventDefault(); }
+    if (e.key === '+' || e.key === '=') zoomCenter(1.25);
+    if (e.key === '-' || e.key === '_') zoomCenter(1 / 1.25);
+    if (e.key === '0') reset();
   });
+
+  /* --- плавное появление --- */
+  img.style.transform = 'translate(0px,0px) scale(0.72)';
+  function show() { img.classList.add('shown'); scale = 1; apply(); }
+  if (img.complete) { setTimeout(show, 50); } else { img.addEventListener('load', function() { setTimeout(show, 30); }); }
 </script>
 </body>
 </html>

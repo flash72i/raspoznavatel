@@ -23,8 +23,9 @@ const state = {
   settings: {
     ocr_langs: "auto", auto_copy: true, smart_hotkey: true,
     hotkey_recognize: "ctrl+shift+s", hotkey_screenshot: "ctrl+shift+p",
-    autostart: false, preload: true, sound: true,
+    autostart: false, preload: true, sound: true, screenshots_dir: "",
   },
+  info: null,        // get_info: data_dir, screenshots_dir (по умолчанию)
   shotCount: 0,
   recording: null,   // какое поле горячей клавиши сейчас записывается
   pairs: [],         // доступные направления перевода [{src,tgt,label}]
@@ -128,18 +129,29 @@ function hideLoader() {
     updateProgress(-1);
   }
 }
-/* Шкала прогресса: pct 0..100, pct<0 — спрятать */
+/* Шкала прогресса: pct 0..100, pct<0 — спрятать.
+   Дублируется ВНИЗУ в статус-баре (как просил пользователь) и в карточке
+   лоадера (которая теперь не блокирует клики). */
 function updateProgress(pct, text) {
   const track = $("#progressTrack"), fill = $("#progressFill"), p = $("#progressPct");
-  if (!track || !fill || !p) return;
+  const sWrap = $("#statusProgress"), sFill = $("#statusProgressFill"), sPct = $("#statusProgressPct");
   if (pct == null || pct < 0) {
-    track.classList.add("hidden"); p.classList.add("hidden");
+    if (track) track.classList.add("hidden");
+    if (p) p.classList.add("hidden");
+    if (sWrap) sWrap.classList.remove("active");
     return;
   }
-  track.classList.remove("hidden"); p.classList.remove("hidden");
-  fill.style.width = Math.max(0, Math.min(100, pct)) + "%";
-  p.textContent = Math.round(pct) + "%" + (pct >= 100 ? " · готово" : "");
-  if (text) $("#loaderText").textContent = text;
+  const v = Math.max(0, Math.min(100, pct));
+  if (track) track.classList.remove("hidden");
+  if (fill) fill.style.width = v + "%";
+  if (p) { p.classList.remove("hidden"); p.textContent = Math.round(v) + "%" + (v >= 100 ? " · готово" : ""); }
+  if (sWrap) sWrap.classList.add("active");
+  if (sFill) sFill.style.width = v + "%";
+  if (sPct) sPct.textContent = Math.round(v) + "%";
+  if (text) {
+    if ($("#loaderText")) $("#loaderText").textContent = text;
+    setStatus(text, "busy");
+  }
 }
 window.onProgress = (pct, text) => updateProgress(pct, text);
 
@@ -510,9 +522,7 @@ window.onHotkeyResult = (r) => {
 function showShotSaved(path) {
   state.shotCount++;
   setStatus("Скриншот сохранён: " + path);
-  const fb = $("#statusFolderBtn");
-  if (fb) fb.classList.remove("hidden");
-  toast(`Скриншот сохранён: ${path}`, "success", 5200);
+  toast(`Скриншот сохранён: ${path}  (значок 📁 внизу откроет папку)`, "success", 5200);
   playSound("shot");
 }
 
@@ -647,9 +657,21 @@ async function pushSettings() {
       state.settings = Object.assign({}, state.settings, r);
       refreshHotkeyFields();
       updateHotkeysStatus();
+      refreshShotsDir();
     }
     return true;
   } catch (e) { return false; }
+}
+
+/* --- папка скриншотов (настраиваемая) --- */
+function refreshShotsDir() {
+  const el = $("#shotsDirPath");
+  if (!el) return;
+  const custom = state.settings.screenshots_dir || "";
+  const def = (state.info && state.info.screenshots_dir) || "";
+  const text = custom || (def ? def + "  (по умолчанию)" : "по умолчанию — рядом с программой");
+  el.textContent = text;
+  el.title = text;
 }
 
 async function syncAutostartUI() {
@@ -785,6 +807,30 @@ function initSettings() {
   }
   const st = $("#soundTestBtn");
   if (st) st.addEventListener("click", () => playSound("ok"));
+
+  const ch = $("#chooseShotsDirBtn");
+  if (ch) ch.addEventListener("click", async () => {
+    try {
+      const r = await callApi("choose_screenshots_dir");
+      if (r && r.ok) {
+        state.settings.screenshots_dir = r.path;
+        refreshShotsDir();
+        toast("Папка скриншотов: " + r.path, "success", 5000);
+      }
+    } catch (e) {}
+  });
+  const rs = $("#resetShotsDirBtn");
+  if (rs) rs.addEventListener("click", async () => {
+    try {
+      const r = await callApi("reset_screenshots_dir");
+      if (r && r.ok) {
+        state.settings.screenshots_dir = "";
+        refreshShotsDir();
+        toast("Папка скриншотов по умолчанию: " + r.path, "success", 5000);
+      }
+    } catch (e) {}
+  });
+  refreshShotsDir();
   $("#setAutostart").addEventListener("change", async () => {
     state.settings.autostart = $("#setAutostart").checked;
     await pushSettings();   // Python создаст/удалит ярлык в папке «Автозагрузка»
@@ -874,7 +920,9 @@ async function onReady() {
     initTranslationDirs();
     await loadTranslationPairs();
     const info = await callApi("get_info");
+    state.info = info;
     $("#versionLabel").textContent = info.version;
+    refreshShotsDir();
     setStatus(`Готов к работе · ${formatHotkey(state.settings.hotkey_recognize)} — распознать · ${formatHotkey(state.settings.hotkey_screenshot)} — скриншот`);
     callApi("preload_translator").catch(() => {});
     pyapi().js_log("Интерфейс v2.3 загружен").catch(() => {});
