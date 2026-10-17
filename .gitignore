@@ -7,6 +7,7 @@ venv/
 node_modules/
 dist/
 build/
+*.part
 
 # — Секреты (никогда не должны попасть в репозиторий) —
 .env
@@ -17,15 +18,23 @@ build/
 *.tsv
 .registry.tsv
 .DS_Store
+Thumbs.db
 
 # — Рабочие данные программы (создаются при запуске) —
 Raspoznavatel_data/
 Screenshots/
 
-# — Модель перевода EN→RU (195 МБ) превышает лимит GitHub 100 МБ на файл.
-# Это НЕ исходник: она автоматически скачивается перед сборкой —
+# — Модели перевода EN↔RU (195 и 149 МБ) превышают лимит GitHub 100 МБ на файл.
+# Это НЕ исходники: они автоматически скачиваются перед сборкой —
 # шаг [3/6] в build.bat или:  python tools/download_resources.py
+# (с v2.4.0 скрипт сам распознаёт и заменяет повреждённые файлы-заглушки)
 resources/argos/*.argosmodel
 
 # — Установщик Tesseract (если был скачан скриптом подготовки ресурсов) —
 tools/tesseract-ocr-w64-setup.exe
+
+# — GitHub Actions workflow: пуш файлов из .github/workflows требует токен
+# со scope `workflow` (с токеном только `repo` GitHub отклоняет ВЕСЬ пуш).
+# Файл build-windows.yml живёт в проекте локально; как включить облачную
+# сборку одним действием — см. README, «Способ 1».
+.github/

@@ -386,107 +386,44 @@ check("reset_screenshots_dir → по умолчанию",
 check("после сброса effective = Screenshots рядом с программой",
       a9._effective_screenshots_dir() == config.get_screenshots_dir())
 
-print(f"\nИТОГ: {PASS} пройдено, {FAIL} провалено")
-sys.exit(0 if FAIL == 0 else 1)
+print("\n--- 14. v2.4: действие крестика (close_action) ---")
+a10, w10 = fresh_api()
+w10.events.loaded.set(); time.sleep(0.6)
+r = a10.save_settings({**a10._settings, "close_action": "минимизировать"})
+check("недопустимое значение close_action отклонено", r.get("ok") is False and bool(r.get("error")))
+r = a10.save_settings({**a10._settings, "close_action": "tray"})
+check("close_action=tray сохранён", r.get("ok") is True and r.get("close_action") == "tray")
+class _FakeTray:
+    stopped = False
+    def stop(self): self.stopped = True
+a10._tray = _FakeTray()
+r = a10.win_close()
+check("✕ при tray: окно спрятано, НЕ уничтожено",
+      r.get("minimized_to_tray") is True and "hide" in w10.ops and "destroy" not in w10.ops, str(w10.ops))
+r = a10.save_settings({**a10._settings, "close_action": "exit"})
+check("close_action=exit сохранён", r.get("ok") is True)
+w10.ops.clear()
+r = a10.win_close()
+time.sleep(0.8)   # destroy вызывается с задержкой 0.5 с (мост успевает ответить)
+check("✕ при exit: окно уничтожено (программа закрыта)", "destroy" in w10.ops, str(w10.ops))
+check("трей остановлен при выходе", a10._tray.stopped is True)
 
-import re as _re
-_filters_ok = all(_re.search(_FILTER_RE, f) for f in api_mod.IMAGE_FILTER)
-check("IMAGE_FILTER проходит валидацию pywebview (отдельные строки)", _filters_ok,
-      str(api_mod.IMAGE_FILTER))
-a3, w3 = fresh_api()
-w3.events.loaded.set(); time.sleep(0.8)
-img = os.path.join(TMP, "pic.png")
-with open(img, "wb") as f:
-    f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
-w3.dialog_result = (img,)
-r = a3.pick_image()
-check("pick_image отработал без TypeError", isinstance(r, dict) and r.get("ok") is True, str(r)[:120])
-check("OPEN_DIALOG=10 передан как dialog_type", w3.dialog_kwargs.get("dialog_type") == 10, str(w3.dialog_kwargs))
-check("имя параметра 'type' больше не используется", "type" not in w3.dialog_kwargs)
 
-# save-диалог через capture_screenshot(ask_folder=True)
-shot_src = os.path.join(TMP, "shot_src.png")
-with open(shot_src, "wb") as f:
-    f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
-a3._do_capture = lambda: {"path": shot_src, "base64": "", "width": 10, "height": 10}
-dst = os.path.join(TMP, "save_target")
-w3.dialog_result = (dst,)
-r = a3.capture_screenshot(True)
-check("capture_screenshot(ask_folder) вернул ok", isinstance(r, dict) and r.get("ok") is True, str(r)[:150])
-check("SAVE_DIALOG=30", w3.dialog_kwargs.get("dialog_type") == 30, str(w3.dialog_kwargs.get("dialog_type")))
-check("save_filename предложен", bool(w3.dialog_kwargs.get("save_filename", "")))
-check("файл сохранён с добавлением .png", os.path.isfile(dst + ".png"))
-
-print("\n--- 5. Валидация горячих клавиш ---")
-cases = [
-    ("ctrl+f9", "ctrl+f9", None),
-    ("Ctrl + Shift + S", "ctrl+shift+s", None),
-    ("alt+q", "alt+q", None),
-    ("F5", None, "err"),                       # одна клавиша
-    ("ctrl+alt+del", None, "err"),             # системная
-    ("alt+f4", None, "err"),                   # системная
-    ("windows+l", None, "err"),                # системная
-    ("ctrl+shift+ы", None, "err"),             # неизвестная клавиша
-    ("ctrl+ctrl+s", None, "err"),              # дубль модификатора
-    ("ctrl+shift", None, "err"),               # нет основной клавиши
-    ("ctrl+page up", "ctrl+page up", None),
-    ("shift+f13", "shift+f13", None),
-    ("ctrl+num 5", "ctrl+num 5", None),
-    ("", "", None),                            # пусто — допустимо
-]
-ok_all = True
-for src, want, want_err in cases:
-    got, err = api_mod.normalize_hotkey(src)
-    if want_err:
-        good = got is None and err
-    else:
-        good = got == want and err is None
-    if not good:
-        ok_all = False
-        print(f"   провал: {src!r} -> ({got!r}, {err!r}), ожидалось ({want!r}, {want_err!r})")
-check(f"normalize_hotkey: {len(cases)} кейсов", ok_all)
-
-print("\n--- 6. save_settings: отклонение/принятие/дубликаты ---")
-base = dict(api_mod.DEFAULT_SETTINGS)
-r = a3.save_settings({**base, "hotkey_recognize": "f5"})
-check("«f5» отклонена (ok=False + error)", r.get("ok") is False and bool(r.get("error")), str(r)[:100])
-check("при отклонении возвращены текущие settings", isinstance(r.get("settings"), dict))
-r = a3.save_settings({**base, "hotkey_recognize": "alt+f4"})
-check("«alt+f4» отклонена", r.get("ok") is False)
-r = a3.save_settings({**base, "hotkey_recognize": "ctrl+f9", "hotkey_screenshot": "ctrl+f9"})
-check("одинаковые комбинации отклонены", r.get("ok") is False)
-r = a3.save_settings({**base, "hotkey_recognize": "ctrl+f9"})
-check("«ctrl+f9» принята (ok=True)", r.get("ok") is True, str(r)[:120])
-import json
-with open(config.SETTINGS_FILE, encoding="utf-8") as f:
-    saved = json.load(f)
-check("значение сохранено в settings.json", saved.get("hotkey_recognize") == "ctrl+f9")
-check("в журнал попала запись о сохранении", "Настройки сохранены" in log_text())
-
-a4 = api_mod.Api()   # новый экземпляр — должен прочитать файл
-check("настройки переживают перезапуск", a4._settings.get("hotkey_recognize") == "ctrl+f9")
-r = a4.save_settings({**a4._settings, "auto_copy": False})
-check("булевы флаги сохраняются", r.get("ok") is True and r.get("auto_copy") is False)
-
-print("\n--- 7. Видимость окна (захват экрана в режиме трея) ---")
-a5, w5 = fresh_api(started_hidden=True)
-check("started_hidden → окно считается невидимым", a5._visible is False)
-a5.win_show()
-check("win_show → видимо", a5._visible is True)
-a5.win_hide_to_tray()
-check("win_hide_to_tray → невидимо", a5._visible is False)
-w5.ops.clear()   # сбрасываем историю: дальше проверяем, что захват её НЕ пополняет
-a5._do_capture = lambda: None
-r = a5.capture_smart()
-check("захват при невидимом окне не дёргает hide/show",
-      not w5.ops and r.get("cancelled") is True, str(w5.ops))
-
-print("\n--- 8. Ротация журнала ---")
-with open(log._log_file, "w", encoding="utf-8") as f:
-    f.write("x" * (5_000_001))
-log.info("триггер ротации")
-check("app.log.old создан", os.path.isfile(log._log_file + ".old"))
-check("новый app.log маленький", os.path.getsize(log._log_file) < 10_000)
+print("\n--- 15. v2.4.0: автозапуск РЕАЛЬНО применяется при сохранении ---")
+a11, w11 = fresh_api()
+w11.events.loaded.set(); time.sleep(0.6)
+applied = []
+a11._apply_autostart = lambda enabled: applied.append(enabled)   # без PowerShell в тесте
+r = a11.save_settings({**a11._settings, "autostart": True})
+check("autostart=True принят (ok=True)", r.get("ok") is True and r.get("autostart") is True, str(r)[:120])
+check("_apply_autostart(True) вызван — ярлык создаётся", applied == [True], str(applied))
+r = a11.save_settings({**a11._settings, "autostart": True})
+check("повторное True не вызывает лишнего применения", applied == [True], str(applied))
+r = a11.save_settings({**a11._settings, "autostart": False})
+check("autostart=False → _apply_autostart(False)", applied == [True, False], str(applied))
+applied.clear()
+r = a11.save_settings({**a11._settings, "close_action": "tray"})
+check("смена close_action НЕ трогает автозапуск", applied == [] and r.get("ok") is True, str(applied))
 
 print(f"\nИТОГ: {PASS} пройдено, {FAIL} провалено")
 sys.exit(0 if FAIL == 0 else 1)

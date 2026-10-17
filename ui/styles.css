@@ -1,4 +1,5 @@
 
+
 /* ==========================================================================
    «Распознаватель» v2 — styles.css
    Одностраничный компактный интерфейс: кастомная тёмная панель заголовка,
@@ -507,3 +508,18 @@ body { display: flex; flex-direction: column; }
   background: rgba(6, 10, 22, .7); border: 1px solid var(--stroke); color: #9fb0e8;
   font-size: 10.5px; font-family: 'Consolas', monospace; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+
+/* v2.4 — строка настройки с селектором (действие крестика) */
+.set-row { display: flex; align-items: center; gap: 10px; margin: 10px 0 2px; }
+.set-row-label { font-size: 11.5px; color: #c7d2f5; font-weight: 600; cursor: help;
+  border-bottom: 1px dotted rgba(160,175,230,.4); }
+.set-select { flex: 1; min-width: 0; appearance: none; -webkit-appearance: none;
+  padding: 8px 30px 8px 11px; border-radius: 9px; font-size: 11.5px; font-family: inherit;
+  color: #dbe4ff; background: rgba(6, 10, 22, .75)
+    url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M0 0l5 6 5-6z" fill="%2322d3ee"/></svg>')
+    no-repeat right 11px center;
+  border: 1px solid rgba(120,140,255,.22); outline: none; cursor: pointer;
+  transition: border-color .15s, box-shadow .15s; }
+.set-select:hover, .set-select:focus { border-color: rgba(34,211,238,.5);
+  box-shadow: 0 0 10px rgba(34,211,238,.18); }
+.set-select option { background: #0c1226; color: #dbe4ff; }

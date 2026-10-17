@@ -24,6 +24,9 @@ os.makedirs(SHOTS, exist_ok=True)
 # ВАЖНО: путь вычисляем от __file__ (абсолютные /home/... в файлах не работают в песочнице)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(PROJECT_ROOT)   # отдаём ui/ относительно корня проекта
+sys.path.insert(0, PROJECT_ROOT)
+import config as app_config          # noqa: E402
+APP_VER = app_config.APP_VERSION     # версия берётся из config — тест не устаревает
 _httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 8765), http.server.SimpleHTTPRequestHandler)
 threading.Thread(target=_httpd.serve_forever, daemon=True).start()
 
@@ -36,8 +39,8 @@ window.addEventListener('unhandledrejection', e => window.__errors.push('reject:
 const TINY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 const responses = {
-  get_info: {name:'Распознаватель', version:'2.3.1', frozen:true, data_dir:'C:/Raspoznavatel/Raspoznavatel_data', screenshots_dir:'C:/Raspoznavatel/Screenshots'},
-  get_settings: {ocr_langs:'auto', auto_copy:true, smart_hotkey:true, hotkey_recognize:'ctrl+shift+s', hotkey_screenshot:'ctrl+shift+p', autostart:false, preload:true, sound:true, screenshots_dir:''},
+  get_info: {name:'Распознаватель', version:'__APP_VERSION__', frozen:true, data_dir:'C:/Raspoznavatel/Raspoznavatel_data', screenshots_dir:'C:/Raspoznavatel/Screenshots'},
+  get_settings: {ocr_langs:'auto', auto_copy:true, smart_hotkey:true, hotkey_recognize:'ctrl+shift+s', hotkey_screenshot:'ctrl+shift+p', autostart:false, preload:true, sound:true, screenshots_dir:'', close_action:'exit'},
   save_settings: (args) => Object.assign({ok: true}, args[0]),
   get_available_langs: [{code:'rus',name:'Русский'},{code:'eng',name:'Английский'},{code:'deu',name:'Немецкий'}],
   pick_image: {ok:true, path:'C:/test/img.png', name:'img.png', base64:TINY_PNG},
@@ -90,6 +93,8 @@ window.pywebview = {
 };
 """
 
+MOCK_JS = MOCK_JS.replace("__APP_VERSION__", APP_VER)
+
 results = []
 def check(name, cond, extra=""):
     results.append((name, bool(cond), extra))
@@ -136,7 +141,7 @@ with sync_playwright() as p:
     check("распознанный текст сразу в поле", "Hello world" in val, val[:40])
     check("кнопки «Распознать текст»/«Найти QR» убраны",
           page.evaluate("!document.querySelector('#runOcrBtn') && !document.querySelector('#runQrBtn')"))
-    check("версия 2.3.1 в интерфейсе", page.inner_text("#versionLabel") == "2.3.1",
+    check(f"версия {APP_VER} в интерфейсе", page.inner_text("#versionLabel") == APP_VER,
           page.inner_text("#versionLabel"))
 
     # --- 3. Авто-режим QR (путь с 'qr' → мок вернёт коды) ---
@@ -198,6 +203,10 @@ with sync_playwright() as p:
     page.click("label:has(#setSound)"); page.wait_for_timeout(400)
     snd = page.evaluate("window.__calls.filter(c=>c.m==='save_settings').slice(-1)[0].args[0]")
     check("переключатель звука → save_settings c sound=false", '"sound":false' in snd, snd[-120:])
+    page.select_option("#setCloseAction", "tray"); page.wait_for_timeout(400)
+    ca = page.evaluate("window.__calls.filter(c=>c.m==='save_settings').slice(-1)[0].args[0]")
+    check("действие ✕ «Свернуть в трей» → save_settings c close_action=tray", '"close_action":"tray"' in ca, ca[-140:])
+    page.select_option("#setCloseAction", "exit"); page.wait_for_timeout(300)
     page.click("#chooseShotsDirBtn"); page.wait_for_timeout(400)
     check("«Выбрать папку…» → choose_screenshots_dir", calls("choose_screenshots_dir") == 1)
     shots = page.inner_text("#shotsDirPath")

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-api.py — Python-API приложения «Распознаватель» (v2.2), доступное из JavaScript.
+api.py — Python-API приложения «Распознаватель» (v2.4), доступное из JavaScript.
 
 Что изменилось в 2.2 (исправление «немых» кнопок и зависшего старта):
   • Api больше НЕ требует окно в конструкторе: main.py создаёт Api, передаёт
@@ -73,6 +73,7 @@ DEFAULT_SETTINGS = {
     "preload": True,                        # прогревать модель перевода в фоне
     "sound": True,                          # звуки-уведомления («бульк» на готово)
     "screenshots_dir": "",                  # своя папка скриншотов ("" = Screenshots рядом с программой)
+    "close_action": "exit",                 # ✕: "exit" — закрыть программу, "tray" — свернуть в трей
 }
 
 # ---------------------------------------------------------------------------
@@ -412,6 +413,19 @@ class Api:
         иначе его поток навсегда повиснет на семафоре evaluate_js и процесс
         не завершится (особенность GTK-бэкенда).
         """
+        # Настройка «действие крестика»: свернуть в трей вместо выхода
+        action = str(self._settings.get("close_action") or "exit").lower()
+        if action == "tray":
+            if self._tray is not None:
+                try:
+                    self._window.hide()
+                    self._visible = False
+                    log.info("✕: программа свёрнута в трей (настройка close_action=tray)")
+                    return {"ok": True, "closed": False, "minimized_to_tray": True}
+                except Exception as exc:
+                    log.error(f"Не удалось свернуть в трей ({exc}) — закрываю полностью")
+            else:
+                log.warn("close_action=tray, но трей недоступен — закрываю программу полностью")
         log.info("Закрытие приложения по кнопке ✕")
         try:
             if self._tray:
@@ -539,14 +553,23 @@ class Api:
                     changed_hotkeys = True
             elif key in ("auto_copy", "smart_hotkey", "preload", "autostart", "sound"):
                 val = bool(val)
+                # ВАЖНО: отслеживание изменения автозапуска — именно в этой
+                # ветке (в v2.4.0 строка случайно уехала в ветку close_action,
+                # из-за чего ярлык в «Автозагрузке» не создавался/не удалялся).
+                if key == "autostart" and val != bool(self._settings.get("autostart")):
+                    autostart_changed = True
             elif key == "screenshots_dir":
                 val = str(val or "").strip()
                 if val and not os.path.isdir(val):
                     return {"ok": False,
                             "error": f"Папка скриншотов не существует: {val}",
                             "settings": dict(self._settings)}
-                if key == "autostart" and val != self._settings.get("autostart"):
-                    autostart_changed = True
+            elif key == "close_action":
+                val = str(val or "exit").strip().lower()
+                if val not in ("exit", "tray"):
+                    return {"ok": False,
+                            "error": f"Неверное действие крестика: {val} (можно exit или tray)",
+                            "settings": dict(self._settings)}
             pending[key] = val
 
         h1 = pending.get("hotkey_recognize", self._settings.get("hotkey_recognize"))

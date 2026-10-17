@@ -302,6 +302,16 @@ def run(window, api):
         except Exception as exc:
             rep.add("окно-лупа открывается и закрывается (open_image_zoom)", False, repr(exc))
 
+        # --- 8г. v2.4: действие крестика (настройка сохраняется) ---
+        rca = js_async("ca", f"window.pywebview.api.save_settings(Object.assign({{}}, {json.dumps(base)}, {{close_action: 'tray'}}))")
+        ok_ca = isinstance(rca, dict) and rca.get("ok") is True and rca.get("close_action") == "tray"
+        rcb = js_async("cab", f"window.pywebview.api.save_settings(Object.assign({{}}, {json.dumps(base)}, {{close_action: 'exit'}}))")
+        ok_cb = isinstance(rcb, dict) and rcb.get("ok") is True
+        rcc = js_async("cac", f"window.pywebview.api.save_settings(Object.assign({{}}, {json.dumps(base)}, {{close_action: 'uyti'}}))")
+        ok_cc = isinstance(rcc, dict) and rcc.get("ok") is False
+        rep.add("настройка «действие ✕» (tray/exit/ошибка)", ok_ca and ok_cb and ok_cc,
+                f"{ok_ca},{ok_cb},{ok_cc}")
+
         # --- 9. диагностика компонентов через мост ---
         rc = js_async("comp", "window.pywebview.api.check_components()", timeout=90)
         good = isinstance(rc, dict) and all(k in rc for k in ("ocr", "qr", "screen", "clipboard", "translator"))

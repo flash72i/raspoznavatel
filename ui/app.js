@@ -1,5 +1,5 @@
 /* ==========================================================================
-   «Распознаватель» v2.2 — app.js
+   «Распознаватель» v2.4 — app.js
    Одностраничный интерфейс. Все вызовы Python-API проходят через обёртку
    callApi(), которая логирует ЛЮБУЮ ошибку (в тост и в журнал программы) —
    «немых» сбоев больше не бывает.
@@ -24,6 +24,7 @@ const state = {
     ocr_langs: "auto", auto_copy: true, smart_hotkey: true,
     hotkey_recognize: "ctrl+shift+s", hotkey_screenshot: "ctrl+shift+p",
     autostart: false, preload: true, sound: true, screenshots_dir: "",
+    close_action: "exit",
   },
   info: null,        // get_info: data_dir, screenshots_dir (по умолчанию)
   shotCount: 0,
@@ -808,6 +809,20 @@ function initSettings() {
   const st = $("#soundTestBtn");
   if (st) st.addEventListener("click", () => playSound("ok"));
 
+  /* действие кнопки ✕: закрыть программу или свернуть в трей */
+  const ca = $("#setCloseAction");
+  if (ca) {
+    ca.value = state.settings.close_action || "exit";
+    ca.addEventListener("change", async () => {
+      state.settings.close_action = ca.value;
+      if (await pushSettings()) {
+        toast(ca.value === "tray"
+          ? "✕ теперь сворачивает программу в трей (иконка справа внизу)"
+          : "✕ снова закрывает программу", "success", 4200);
+      } else ca.value = state.settings.close_action || "exit";
+    });
+  }
+
   const ch = $("#chooseShotsDirBtn");
   if (ch) ch.addEventListener("click", async () => {
     try {
@@ -925,7 +940,7 @@ async function onReady() {
     refreshShotsDir();
     setStatus(`Готов к работе · ${formatHotkey(state.settings.hotkey_recognize)} — распознать · ${formatHotkey(state.settings.hotkey_screenshot)} — скриншот`);
     callApi("preload_translator").catch(() => {});
-    pyapi().js_log("Интерфейс v2.3 загружен").catch(() => {});
+    pyapi().js_log("Интерфейс v2.4 загружен").catch(() => {});
   } catch (e) {
     setStatus("Ошибка инициализации: " + e, "error");
   }

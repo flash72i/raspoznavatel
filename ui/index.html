@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -199,6 +200,14 @@
       <label class="uiverse-switch"><input type="checkbox" id="setSound" checked>
         <span class="switch-track"><span class="switch-thumb"></span></span>
         <span class="switch-label">Звуковые уведомления («бульк» на готово, сигнал на ошибку)</span></label>
+      <div class="set-row">
+        <span class="set-row-label" data-tooltip="Что делать при нажатии ✕ в углу окна">Действие кнопки ✕</span>
+        <select class="set-select" id="setCloseAction">
+          <option value="exit">Закрыть программу</option>
+          <option value="tray">Свернуть в трей (скрыть с панели задач)</option>
+        </select>
+      </div>
+      <p class="card-hint" id="closeActionHint">«Свернуть в трей»: программа остаётся работать — иконка в области уведомлений (трей) справа внизу, горячие клавиши действуют, двойной клик по иконке снова открывает окно. Выход — через меню иконки (правый клик → «Выход»).</p>
       <div class="folder-row">
         <button class="mini-btn ripple" id="soundTestBtn">🔊 Проверить звук</button>
         <button class="mini-btn ripple" id="openShotsBtn">📁 Папка скриншотов</button>
