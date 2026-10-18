@@ -42,10 +42,11 @@
 `7z` (может не быть) и бэкап-скриптов. Ставь одним заходом:
 
 ```bash
-# 1) базовый набор (wine64 БЕЗ мета-пакета wine — см. урок L11)
+# 1) базовый набор (wine64 БЕЗ мета-пакета wine — см. урок L11;
+#    procps ОБЯЗАТЕЛЕН: без ps/pkill не работает уборка процессов, урок L33)
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-    wine64 xvfb xauth p7zip-full nsis ca-certificates
+    wine64 xvfb xauth p7zip-full nsis procps ca-certificates
 ln -sf ../lib/wine/wine64 /usr/bin/wine64          # apt не создаёт врапперы
 ln -sf ../lib/wine/wineserver64 /usr/bin/wineserver
 
@@ -123,6 +124,17 @@ xvfb-run -a wine64 "C:\\winpy\\python.exe" -m pip install -r requirements.txt
 Подними версию в трёх местах: `config.py`, `installer.nsi`, `README.md` (L26).
 
 ### 4.3 Сборка exe (Wine)
+
+**Полная пересборка релиза одной командой (рекомендуется):**
+```bash
+bash tools/build_release_wine.sh all        # doctor -> env -> build -> check -> package
+# по этапам: doctor | env | build | check | package | clean
+# готовые ассеты: <workspace>/release_assets/ (Setup.exe + portable.zip)
+```
+Скрипт сам ставит проверки (диск ≥5 ГБ, ресурсы, тесты), сам собирает, гоняет
+selftest и ОБЯЗАТЕЛЬНО убирает wine-процессы после каждого шага (урок L33).
+Ниже — те же шаги вручную, если нужно отладить отдельный этап.
+
 ```bash
 export WINEDEBUG=-all WINEPREFIX=<workspace>/wineprefix
 cd <workspace>/raspoznavatel
@@ -287,6 +299,15 @@ bash tools/gh-backup.sh push <папка> -m "то же сообщение"
   иначе «file not found» и «binary file matches».
 * **L17.** Свободного места < 5 ГБ → снеси `wineprefix`, `dist_console`,
   `build_src` ДО новой сборки → иначе сборка умрёт посередине на полном диске.
+* **L33.** Wine-шаг завершился (wineboot, pip, PyInstaller, selftest) → СРАЗУ
+  убей Wine и дождись пропадания зомби: `wineserver -k`, `pkill -f wine64`,
+  `pkill -f Xvfb`, `pkill -f xvfb-run` + несколько секунд ожидания в цикле
+  (нужен пакет `procps`, иначе `ps`/`pkill` просто нет), и только потом
+  начинай следующий шаг; всю пересборку гони одним
+  `bash tools/build_release_wine.sh all`, где уборка встроена после каждого
+  wine-вызова и в `trap EXIT` → иначе зомби копятся, песочница исчерпывает
+  лимит процессов, и сборка с уже готовым exe умирает на последнем шаге
+  (потерянная сессия 2026-10-18).
 
 ### Ресурсы
 * **L18.** `download_resources.py` сказал «готово» про модели перевода → всё
