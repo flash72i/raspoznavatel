@@ -169,6 +169,7 @@ check("ошибка записана в файл журнала", "НЕПРЕД�
 
 print("\n--- 4. Диалоги файлов: правильные коды и имя параметра ---")
 # фильтр файлов должен соответствовать валидатору pywebview (parse_file_type)
+import re
 import re as _re
 _FILTER_RE = r"^([\w ]+)\((\*(?:\.(?:\w+|\*))*(?:;\*\.\w+)*)\)$"
 _filters_ok = all(_re.search(_FILTER_RE, f) for f in api_mod.IMAGE_FILTER)
@@ -761,19 +762,26 @@ check("✕ при tray: страховка включена (окно вернё
       a23._net_started is True and a23._visible is False)
 a23._closing = True
 
-print("\n--- 23. v2.6.1: версия синхронна в config/installer/README ---")
+print("\n--- 23. версия: одно место правды, нигде не «зашита» ---")
 _cfg = io.open(os.path.join(_ROOT, "config.py"), encoding="utf-8").read()
 _nsi = io.open(os.path.join(_ROOT, "installer.nsi"), encoding="utf-8").read()
 _rdm = io.open(os.path.join(_ROOT, "README.md"), encoding="utf-8").read()
+_appjs = io.open(os.path.join(_ROOT, "ui", "app.js"), encoding="utf-8").read()
 _ver = config.APP_VERSION
+check("config.py: APP_VERSION = " + _ver, f'APP_VERSION = "{_ver}"' in _cfg)
 check("installer.nsi: OutFile и все поля версии = " + _ver,
       f"Raspoznavatel-{_ver}-Setup.exe" in _nsi
       and f'VIProductVersion "{_ver}.0"' in _nsi
       and f'"FileVersion"     "{_ver}"' in _nsi
       and f'"ProductVersion"  "{_ver}"' in _nsi
       and f"Распознаватель {_ver}" in _nsi, _nsi[:80])
-check("README: версия та же", f"**{_ver}**" in _rdm and f"Raspoznavatel-{_ver}-Setup.exe" in _rdm)
-check("config.py: APP_VERSION прочитан из файла", f'APP_VERSION = "{_ver}"' in _cfg)
+check("README: номер версии НЕ зашит (иначе на сайте видна старая версия)",
+      not re.search(r"\b2\.\d+\.\d+\b", _rdm),
+      str(re.findall(r"\b2\.\d+\.\d+\b", _rdm)[:3]))
+check("интерфейс: в журнале нет «Интерфейс vX.Y загружен» (версия приходит из config)",
+      "Интерфейс v" not in _appjs and "Интерфейс загружен" in _appjs)
+check("в коде не осталось меток старых версий (v2.x) в комментариях",
+      not re.search(r"v2\.\d", _appjs) and not re.search(r"(?m)^\s*#\s*v2\.\d", _cfg))
 
 print("\n--- 24. v2.6.2: перевод с языка, модели для которого нет ---")
 import translator as tr_mod  # noqa: E402
@@ -837,6 +845,45 @@ except ImportError:
 _src_fix = _inspect.getsource(api_mod.Api._fix_window_styles)
 check("_fix_window_styles: wintypes импортирован в самой функции (Windows-only ветка)",
       "from ctypes import wintypes" in _src_fix)
+
+print("\n--- 26. v2.6.3: определение языка и перевод без «скачайте пакет» ---")
+_ru_long = ("Вышла ЛУЧШАЯ нейронка для дипфейков — ByteDance выпустили новую модель. "
+            "Ты смог бы это прочитать? Сыну нравится, и мы рады всем.")
+check("русский текст с заглавной «Ы» определяется как ru (а не be)",
+      tr_mod.detect_lang(_ru_long) == "ru", tr_mod.detect_lang(_ru_long))
+check("короткий русский текст с «Ы» — тоже ru", tr_mod.detect_lang("ТЫ СЫН МОЙ?") == "ru")
+check("настоящий украинский определяется как uk",
+      tr_mod.detect_lang("привіт, як справи? це український текст, і він довгий") == "uk")
+check("короткий украинский текст (одна отличительная буква) — uk",
+      tr_mod.detect_lang("Їжак") == "uk")
+check("английский определяется как en",
+      tr_mod.detect_lang("Hello world, this is an English sentence") == "en")
+check("в подсказках кириллицы нет русской буквы «Ы»",
+      "Ы" not in dict(tr_mod._CYR_HINTS).get("be", set())
+      and "ы" not in dict(tr_mod._CYR_HINTS).get("be", set()))
+
+# перевод: язык-«сосед» без модели больше не требует скачать пакет
+_orig2 = (tr_mod.detect_lang, tr_mod.available_pairs, tr_mod.init_model,
+          tr_mod._translate_direct)
+tr_mod.detect_lang = lambda t: "be"
+tr_mod.available_pairs = lambda: [("en", "ru"), ("ru", "en")]
+tr_mod.init_model = lambda *a, **k: True
+tr_mod._translate_direct = lambda text, s_, t_, cb=None: "mother"
+try:
+    r = tr_mod.translate("мама", "auto", "ru")
+    check("авто: «be» → цель «ru» — текст оставлен как есть, БЕЗ ошибки про пакет",
+          r.get("ok") is True and not r.get("error") and "пакет" not in str(r.get("note", "")),
+          str(r)[:160])
+    check("в ответе пояснено, почему текст не менялся",
+          "определён" in str(r.get("note", "")) or "совпадают" in str(r.get("note", "")),
+          str(r.get("note")))
+    r = tr_mod.translate("мама", "auto", "en")
+    check("авто: «be» → цель «en» — переводим как «ru» (модель есть)",
+          r.get("ok") is True and r.get("src") == "ru" and r.get("translated") == "mother",
+          str(r)[:160])
+finally:
+    (tr_mod.detect_lang, tr_mod.available_pairs, tr_mod.init_model,
+     tr_mod._translate_direct) = _orig2
 
 print(f"\nИТОГ: {PASS} пройдено, {FAIL} провалено")
 sys.exit(0 if FAIL == 0 else 1)

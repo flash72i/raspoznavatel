@@ -6,7 +6,7 @@ e2e_selfcheck.py — автоматическая самопроверка ин�
 Приложение открывается само, прогоняет проверки, пишет отчёт в
 Raspoznavatel_data/e2e_report.txt и закрывается.
 
-Что проверяется (ровно те места, где были пользовательские баги v2.1):
+Что проверяется (ровно те места, где были пользовательские баги):
   1. мост window.pywebview.api существует (js_api передан в create_window);
   2. интерфейс доходит до статуса «Готов к работе» (get_settings/get_info прошли);
   3. версия в интерфейсе = версии приложения;
@@ -254,7 +254,7 @@ def run(window, api):
         js_async("restore2", f"window.pywebview.api.save_settings(Object.assign({{}}, {json.dumps(base)}, {{hotkey_screenshot: 'ctrl+shift+p'}}))")
         js("(function(){ document.querySelector('#drawerClose').click(); return 1; })()")
 
-        # --- 8б. v2.3: направления перевода, шкала прогресса, звук ---
+        # --- 8б. направления перевода, шкала прогресса, звук ---
         rp = js_async("pairs", "window.pywebview.api.get_translation_pairs()")
         ok_pairs = isinstance(rp, dict) and rp.get("ok") and len(rp.get("pairs", [])) >= 1
         rep.add("get_translation_pairs вернул направления (≥1)", ok_pairs,
@@ -275,7 +275,7 @@ def run(window, api):
                 json.dumps(rs, ensure_ascii=False)[:140])
         js_async("soundon", f"window.pywebview.api.save_settings(Object.assign({{}}, {json.dumps(base)}, {{sound: true}}))")
 
-        # --- 8в. v2.3.1: значок папки, прогресс в статус-баре, окно-лупа ---
+        # --- 8в. значок папки, прогресс в статус-баре, окно-лупа ---
         vis = js("(function(){ var e=document.querySelector('#statusFolderBtn'); return e && !e.classList.contains('hidden') ? 1 : 0; })()")
         rep.add("значок папки скриншотов виден в статус-баре сразу", vis == 1, str(vis))
 
@@ -302,7 +302,7 @@ def run(window, api):
         except Exception as exc:
             rep.add("окно-лупа открывается и закрывается (open_image_zoom)", False, repr(exc))
 
-        # --- 8г. v2.4: действие крестика (настройка сохраняется) ---
+        # --- 8г. действие крестика (настройка сохраняется) ---
         rca = js_async("ca", f"window.pywebview.api.save_settings(Object.assign({{}}, {json.dumps(base)}, {{close_action: 'tray'}}))")
         ok_ca = isinstance(rca, dict) and rca.get("ok") is True and rca.get("close_action") == "tray"
         rcb = js_async("cab", f"window.pywebview.api.save_settings(Object.assign({{}}, {json.dumps(base)}, {{close_action: 'exit'}}))")

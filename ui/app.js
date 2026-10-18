@@ -1,5 +1,5 @@
 /* ==========================================================================
-   «Распознаватель» v2.4 — app.js
+   «Распознаватель» — app.js
    Одностраничный интерфейс. Все вызовы Python-API проходят через обёртку
    callApi(), которая логирует ЛЮБУЮ ошибку (в тост и в журнал программы) —
    «немых» сбоев больше не бывает.
@@ -30,7 +30,7 @@ const state = {
   shotCount: 0,
   recording: null,   // какое поле горячей клавиши сейчас записывается
   pairs: [],         // доступные направления перевода [{src,tgt,label}]
-  trLangs: null,     // v2.5: каталог языков + пакеты (get_translation_langs)
+  trLangs: null,     // каталог языков + пакеты (get_translation_langs)
   trFrom: "en",
   trTo: "ru",
 };
@@ -559,7 +559,7 @@ const LANG_LABELS = {
 function langLabel(code) { return LANG_LABELS[code] || String(code).toUpperCase(); }
 
 function fillDirSelects() {
-  // v2.5: исходный язык может быть «Авто» (автоопределение); список языков
+  // исходный язык может быть «Авто» (автоопределение); список языков
   // строится по установленным пакетам + направлениям из индекса Argos.
   const codes = [];
   const push = (c) => { if (c && !codes.includes(c)) codes.push(c); };
@@ -618,7 +618,7 @@ async function loadTranslationPairs() {
   fillDirSelects();
 }
 
-/* v2.5: каталог языков + установленные/скачиваемые пакеты (один запрос) */
+/* каталог языков + установленные/скачиваемые пакеты (один запрос) */
 async function loadTranslationLangs() {
   try {
     const r = await callApi("get_translation_langs");
@@ -695,7 +695,7 @@ async function translateCurrent() {
 }
 
 /* ---------------------------------------------------------------------------
-   v2.5: ИСТОРИЯ распознаваний
+   ИСТОРИЯ распознаваний
 --------------------------------------------------------------------------- */
 function fmtHistTime(iso) {
   try {
@@ -802,7 +802,7 @@ function initHistory() {
 }
 
 /* ---------------------------------------------------------------------------
-   v2.5: список установленных языковых пакетов (карточка в настройках)
+   список установленных языковых пакетов (карточка в настройках)
 --------------------------------------------------------------------------- */
 function refreshPacks() {
   const box = $("#packsList");
@@ -838,7 +838,7 @@ function initDrawer() {
     d.classList.add("open"); b.classList.remove("hidden"); d.setAttribute("aria-hidden", "false");
     await refreshLog();
     await syncAutostartUI();
-    loadTranslationLangs().catch(() => {});   // v2.5: карточка языковых пакетов
+    loadTranslationLangs().catch(() => {});   // карточка языковых пакетов
   };
   const close = () => { d.classList.remove("open"); b.classList.add("hidden"); d.setAttribute("aria-hidden", "true"); };
   $("#settingsBtn").addEventListener("click", open);
@@ -1018,7 +1018,7 @@ function initSettings() {
       pushSettings();
     });
   }
-  /* v2.6.0: кнопка «Проверить звук» убрана по просьбе владельца —
+  /* кнопка «Проверить звук» убрана по просьбе владельца —
      звуки уведомлений работают и так, при каждом готовом распознавании. */
 
   /* действие кнопки ✕: закрыть программу или свернуть в трей */
@@ -1147,14 +1147,14 @@ async function onReady() {
     updateHotkeysStatus();
     initTranslationDirs();
     await loadTranslationPairs();
-    await loadTranslationLangs();   // v2.5: языки перевода, пакеты, «Авто»
+    await loadTranslationLangs();   // языки перевода, пакеты, «Авто»
     const info = await callApi("get_info");
     state.info = info;
     $("#versionLabel").textContent = info.version;
     refreshShotsDir();
     setStatus(`Готов к работе · ${formatHotkey(state.settings.hotkey_recognize)} — распознать · ${formatHotkey(state.settings.hotkey_screenshot)} — скриншот`);
     callApi("preload_translator").catch(() => {});
-    pyapi().js_log("Интерфейс v2.4 загружен").catch(() => {});
+    pyapi().js_log("Интерфейс загружен").catch(() => {});
   } catch (e) {
     setStatus("Ошибка инициализации: " + e, "error");
   }

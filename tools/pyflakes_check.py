@@ -5,7 +5,7 @@ tools/pyflakes_check.py — статическая проверка «неопр
 Зачем: Windows-ветки кода (`if os.name == "nt"`, ctypes-вызовы) на Linux не
 выполняются — ни юнит-тесты, ни selftest в них не заходят. Поэтому NameError
 в такой ветке уезжает прямо к владельцу и всплывает только на его машине
-(так v2.6.1 потеряла стиль сворачивания окна: в `_fix_window_styles` не было
+(так одна из сборок потеряла стиль сворачивания окна: в `_fix_window_styles` не было
 `from ctypes import wintypes`, а `except Exception` спрятал ошибку в WARN).
 
 Запуск:  python3 tools/pyflakes_check.py [корень_проекта]

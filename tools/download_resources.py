@@ -35,7 +35,7 @@ UA = {"User-Agent": "Mozilla/5.0 (Raspoznavatel build preparation)"}
 # Минимальные размеры «настоящих» файлов ресурсов. Защита от заглушек:
 # при ошибках загрузки на диск иногда попадает JSON-ошибка (~154 байта)
 # вместо модели — раньше download() считал такой файл «уже существующим»
-# и никогда его не заменял (в v2.2.0 и v2.4.1 так ломался перевод).
+# и никогда его не заменял (в старых сборках так ломался перевод).
 MIN_VALID_SIZE = {
     ".argosmodel": 50 * 1024 * 1024,   # настоящие модели — 150+ МБ
     ".traineddata": 300 * 1024,        # языковые модели OCR — 1+ МБ
@@ -207,7 +207,7 @@ def step_tesseract():
     import subprocess
     kw = {}
     if os.name == "nt":
-        # v2.6.0: консоль установщика не мелькает
+        # консоль установщика не мелькает
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         si.wShowWindow = 0
