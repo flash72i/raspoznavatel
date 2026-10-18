@@ -43,6 +43,7 @@ import log
 
 WM_APP = 0x8000
 WM_TRAYICON = WM_APP + 1
+WM_RASPOZ_SHOW = WM_APP + 5     # «покажи окно» первому экземпляру (single-instance)
 WM_LBUTTONUP = 0x0202
 WM_RBUTTONUP = 0x0205
 WM_COMMAND = 0x0111
@@ -59,6 +60,8 @@ NIF_ICON = 0x02
 NIF_TIP = 0x04
 NIF_INFO = 0x10          # всплывающая подсказка (balloon) у значка
 NIIF_INFO = 0x02         # обычная информационная подсказка
+ERROR_ALREADY_EXISTS = 183
+SINGLE_INSTANCE_MUTEX = "Raspoznavatel_SingleInstance_Mutex"
 IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x10
 LR_DEFAULTSIZE = 0x40
@@ -112,6 +115,33 @@ def menu_items(visible: bool):
         ("sep", None),
         (IDM_EXIT, "Выход"),
     ]
+
+
+def claim_single_instance():
+    """
+    v2.6.0: защита от второго экземпляра программы.
+    Возвращает True, если этот экземпляр — единственный.
+    Если программа УЖЕ запущена: просит первый экземпляр показать окно
+    (PostMessage WM_RASPOZ_SHOW его трей-окну) и возвращает False —
+    вызывающий должен завершиться, иначе в диспетчере задач появятся
+    два процесса одной программы.
+    """
+    if os.name != "nt":
+        return True
+    k32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+    k32.CreateMutexW.restype = ctypes.c_void_p
+    k32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = ctypes.c_void_p
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    # мьютекс намеренно не закрывается: живёт до конца процесса
+    k32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX)
+    if k32.GetLastError() != ERROR_ALREADY_EXISTS:
+        return True
+    hwnd = user32.FindWindowW("RaspoznavatelTrayClass", None)
+    if hwnd:
+        user32.PostMessageW(hwnd, WM_RASPOZ_SHOW, 0, 0)
+    return False
 
 
 class MEASUREITEMSTRUCT(ctypes.Structure):
@@ -211,7 +241,7 @@ if os.name == "nt":  # pragma: no cover
         u.RegisterClassW.restype = wintypes.BOOL
         u.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
         u.CreateWindowExW.restype = wintypes.HWND
-        u.GetMessageW.restype = wintypes.BOOL
+        u.GetMessageW.restype = ctypes.c_int   # 0 = WM_QUIT, -1 = ошибка
         u.GetMessageW.argtypes = [
             ctypes.POINTER(wintypes.MSG), wintypes.HWND,
             wintypes.UINT, wintypes.UINT]
@@ -259,10 +289,12 @@ class TrayIcon:
         self.is_visible = is_visible or (lambda: True)
         self.tooltip = tooltip
         self._thread = None
+        self._watch = None
         self._hwnd = None
         self._nid = None
         self._running = False
         self._hfont = None
+        self._lock = threading.Lock()
         # значок РЕАЛЬНО создан в трее (Shell_NotifyIcon вернул успех)
         self.icon_shown = False
         # самоотрисовка включена; если WM_DRAWITEM хоть раз не сможет
@@ -277,6 +309,10 @@ class TrayIcon:
                 self._call_toggle()
             elif lparam == WM_RBUTTONUP:
                 self._show_menu(hwnd)
+            return 0
+        if msg == WM_RASPOZ_SHOW:
+            # второй экземпляр попросил показать окно (single-instance)
+            self._call_show()
             return 0
         if msg == WM_COMMAND:
             cmd = wparam & 0xFFFF
@@ -419,14 +455,15 @@ class TrayIcon:
         return user32.LoadIconW(None, 32512)  # IDI_APPLICATION как запасной
 
     def _remove_icon(self):
-        try:
-            if self._nid and self._hwnd:
-                self._nid.uFlags = 0
-                ctypes.windll.shell32.Shell_NotifyIconW(
-                    NIM_DELETE, ctypes.byref(self._nid))
-        except Exception:
-            pass
-        self.icon_shown = False
+        with self._lock:
+            try:
+                if self._nid and self._hwnd:
+                    self._nid.uFlags = 0
+                    ctypes.windll.shell32.Shell_NotifyIconW(
+                        NIM_DELETE, ctypes.byref(self._nid))
+            except Exception:
+                pass
+            self.icon_shown = False
 
     # --- v2.6.0: пошаговое создание трея с проверками и повторами ---
     def _ensure_window(self):
@@ -455,32 +492,37 @@ class TrayIcon:
 
     def _add_icon(self):
         """Регистрация значка в трее; возврат — значок РЕАЛЬНО создан."""
-        if not self._ensure_window():
-            return False
-        self._nid = NOTIFYICONDATAW()
-        self._nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
-        self._nid.hWnd = self._hwnd
-        self._nid.uID = 1
-        self._nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
-        self._nid.uCallbackMessage = WM_TRAYICON
-        self._nid.hIcon = self._load_icon()
-        self._nid.szTip = self.tooltip[:127]
-        for attempt in (1, 2):
-            if ctypes.windll.shell32.Shell_NotifyIconW(
-                    NIM_ADD, ctypes.byref(self._nid)):
-                self.icon_shown = True
-                log.ok("Иконка в системном трее создана")
+        with self._lock:
+            if self.icon_shown:
                 return True
-            log.warn(f"Трей: Shell_NotifyIcon отказал (попытка {attempt})")
-            time.sleep(0.2)
-        log.error("Трей: значок в системном трее не создался")
-        return False
+            if not self._ensure_window():
+                return False
+            self._nid = NOTIFYICONDATAW()
+            self._nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+            self._nid.hWnd = self._hwnd
+            self._nid.uID = 1
+            self._nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+            self._nid.uCallbackMessage = WM_TRAYICON
+            self._nid.hIcon = self._load_icon()
+            self._nid.szTip = self.tooltip[:127]
+            for attempt in (1, 2):
+                if ctypes.windll.shell32.Shell_NotifyIconW(
+                        NIM_ADD, ctypes.byref(self._nid)):
+                    self.icon_shown = True
+                    log.ok("Иконка в системном трее создана")
+                    return True
+                log.warn(f"Трей: Shell_NotifyIcon отказал (попытка {attempt})")
+                time.sleep(0.2)
+            log.error("Трей: значок в системном трее не создался")
+            return False
 
     def ensure_icon(self, timeout=1.5):
         """
         Здоровье трея: True, если значок реально есть в трее.
-        Если значок пропал или поток трея погиб — пробует создать заново
-        (иначе «свернуть в трей» оставит пользователя с процессом без окна).
+        Если поток трея погиб — перезапускает его (окно потока уничтожается
+        системой вместе с потоком, поэтому hwnd сбрасываем).
+        Саму добор-создание значка делает поток трея / watchdog —
+        параллельных Shell_NotifyIcon из разных потоков НЕ делаем.
         """
         if self.icon_shown:
             return True
@@ -489,14 +531,10 @@ class TrayIcon:
         if not self._running or (
                 self._thread is not None and not self._thread.is_alive()):
             self._running = False
+            self._hwnd = None
             self.start()
         deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self.icon_shown:
-                return True
-            self._add_icon()
-            if self.icon_shown:
-                return True
+        while time.time() < deadline and not self.icon_shown:
             time.sleep(0.2)
         return self.icon_shown
 
@@ -524,7 +562,22 @@ class TrayIcon:
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        # watchdog: раз в 5 с проверяет, что значок на месте, и возвращает его
+        self._watch = threading.Thread(target=self._watchdog, daemon=True)
+        self._watch.start()
         return True
+
+    def _watchdog(self):
+        """v2.6.0: самолечение значка — если пропал, пересоздаём (≤5 с)."""
+        while self._running:
+            time.sleep(5)
+            if not self._running:
+                return
+            if not self.icon_shown:
+                log.warn("Трей: значок пропал — пересоздаю")
+                if self._thread is not None and not self._thread.is_alive():
+                    self._hwnd = None   # окно погибшего потока уничтожено
+                self._add_icon()
 
     def stop(self):
         self._running = False
@@ -535,20 +588,41 @@ class TrayIcon:
         except Exception:
             pass
 
+    def _message_loop(self):
+        user32 = ctypes.windll.user32
+        msg = wintypes.MSG()
+        while self._running:
+            ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if ret == 0:      # WM_QUIT
+                break
+            if ret == -1:     # ошибка GetMessage — выходим в retry-обёртку
+                log.error("Трей: GetMessage вернул ошибку")
+                break
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        self._remove_icon()
+
     def _run(self):
         try:
-            user32 = ctypes.windll.user32
             _setup_prototypes()
-            if not self._add_icon():
-                return
-
-            msg = wintypes.MSG()
-            while self._running:
-                ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
-                if ret <= 0:
-                    break
-                user32.TranslateMessage(ctypes.byref(msg))
-                user32.DispatchMessageW(ctypes.byref(msg))
-            self._remove_icon()
         except Exception as exc:
-            log.error(f"Трей: сбой потока: {exc}")
+            log.error(f"Трей: не удалось настроить Win32-прототипы: {exc}")
+            return
+        for attempt in (1, 2, 3):
+            if not self._running:
+                return
+            if not self._add_icon():
+                if attempt == 2:
+                    self._hwnd = None   # пробуем окно с нуля
+                time.sleep(1)
+                continue
+            try:
+                self._message_loop()
+            except Exception as exc:
+                log.error(f"Трей: сбой цикла сообщений: {exc}")
+            if not self._running:
+                return
+            log.warn(f"Трей: цикл сообщений завершился — пересоздаю значок "
+                     f"(попытка {attempt})")
+        log.error("Трей: значок не удержался — трей отключён; окно и горячие "
+                  "клавиши продолжают работать")

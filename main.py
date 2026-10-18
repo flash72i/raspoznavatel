@@ -151,6 +151,17 @@ def main():
         selftest()
         return
 
+    # v2.6.0: ОДИН экземпляр программы. Повторный двойной клик по exe
+    # не плодит второй процесс, а открывает окно уже работающего.
+    try:
+        import tray as _tray_single
+        if not _tray_single.claim_single_instance():
+            log.info("Запуск повторный: окно открыто в уже работающем "
+                     "экземпляре — этот процесс завершается")
+            return
+    except Exception as exc:
+        log.warn(f"Проверка одиночного экземпляра не удалась: {exc}")
+
     minimized = "--minimized" in sys.argv[1:]
     debug = os.environ.get("RASPOZ_DEBUG") == "1"
 

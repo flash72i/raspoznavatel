@@ -1018,8 +1018,8 @@ function initSettings() {
       pushSettings();
     });
   }
-  const st = $("#soundTestBtn");
-  if (st) st.addEventListener("click", () => playSound("ok"));
+  /* v2.6.0: кнопка «Проверить звук» убрана по просьбе владельца —
+     звуки уведомлений работают и так, при каждом готовом распознавании. */
 
   /* действие кнопки ✕: закрыть программу или свернуть в трей */
   const ca = $("#setCloseAction");

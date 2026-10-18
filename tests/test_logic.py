@@ -558,6 +558,13 @@ check("v2.6: трей умеет проверять здоровье и пере
 check("v2.6: всплывающая подсказка у значка (balloon) для стрелки ^",
       hasattr(tray_mod.TrayIcon, "notify")
       and tray_mod.NIF_INFO == 0x10 and tray_mod.NIM_MODIFY == 1)
+check("v2.6: single-instance — второй запуск открывает окно первого",
+      tray_mod.WM_RASPOZ_SHOW == tray_mod.WM_APP + 5
+      and hasattr(tray_mod, "claim_single_instance")
+      and "WM_RASPOZ_SHOW" in _inspect.getsource(tray_mod.TrayIcon._wnd_proc))
+check("v2.6: watchdog возвращает пропавший значок (≤5 с)",
+      hasattr(tray_mod.TrayIcon, "_watchdog")
+      and hasattr(tray_mod.TrayIcon, "_message_loop"))
 
 print("\n--- 21. v2.6: скрытие консольных окон (proc) ---")
 import proc as proc_mod  # noqa: E402
