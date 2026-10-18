@@ -43,10 +43,11 @@
 
 ```bash
 # 1) базовый набор (wine64 БЕЗ мета-пакета wine — см. урок L11;
-#    procps ОБЯЗАТЕЛЕН: без ps/pkill не работает уборка процессов, урок L33)
+#    tini и procps ОБЯЗАТЕЛЬНЫ: без субрепера и ps/pgrep не работает уборка
+#    wine-процессов и зомби заполняют таблицу процессов (урок L33)
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-    wine64 xvfb xauth p7zip-full nsis procps ca-certificates
+    wine64 xvfb xauth p7zip-full nsis tini procps ca-certificates
 ln -sf ../lib/wine/wine64 /usr/bin/wine64          # apt не создаёт врапперы
 ln -sf ../lib/wine/wineserver64 /usr/bin/wineserver
 
@@ -128,7 +129,7 @@ xvfb-run -a wine64 "C:\\winpy\\python.exe" -m pip install -r requirements.txt
 **Полная пересборка релиза одной командой (рекомендуется):**
 ```bash
 bash tools/build_release_wine.sh all        # doctor -> env -> build -> check -> package
-# по этапам: doctor | env | build | check | package | clean
+# по этапам: doctor | env | build | check | package | verify | clean
 # готовые ассеты: <workspace>/release_assets/ (Setup.exe + portable.zip)
 ```
 Скрипт сам ставит проверки (диск ≥5 ГБ, ресурсы, тесты), сам собирает, гоняет
@@ -148,21 +149,27 @@ ls dist/Raspoznavatel/Raspoznavatel.exe
 
 ### 4.4 Проверка собранного (обязательно)
 ```bash
-# консольная копия для отчёта на stdout не нужна: отчёт пишется в файл (L15)
-sed 's/console=False/console=True/' build.spec > build_console.spec
-xvfb-run -a wine64 "C:\\winpy\\python.exe" -m PyInstaller build_console.spec \
-    --noconfirm --clean --distpath dist_console 2>&1 | tail -2
-RASPOZ_SELFTEST=1 xvfb-run -a timeout 400 wine64 "<Z-путь>\\dist_console\\Raspoznavatel_console\\Raspoznavatel.exe"
-cat dist_console/Raspoznavatel_console/Raspoznavatel_data/selftest_report.txt
+# Консольная копия НЕ нужна: отчёт пишется в файл рядом с exe (L15), а в Wine
+# она ещё и может не загрузиться (c0000135) — урок L34. Гоняй сам exe:
+RASPOZ_SELFTEST=1 xvfb-run -a timeout 400 wine64 "<Z-путь>\\dist\\Raspoznavatel\\Raspoznavatel.exe"
+cat dist/Raspoznavatel/Raspoznavatel_data/selftest_report.txt
 ```
 Ожидай 10 блоков без ошибок: Tesseract (15 языков), OCR-проба, движки QR,
 QR-цикл, перевод EN→RU живой строкой, tkinter, PIL/mss, папка скриншотов,
 keyboard, превью. Любое `ok: false` — не публикуй релиз, чини.
-После проверки удали `build_console.spec` и `dist_console`.
+**После проверки ОБЯЗАТЕЛЬНО удали рабочие данные из папки сборки** (урок L35):
+```bash
+rm -rf dist/Raspoznavatel/Raspoznavatel_data dist/Raspoznavatel/Screenshots
+ls dist/Raspoznavatel      # только App и Raspoznavatel.exe
+```
+(этап `check` в `tools/build_release_wine.sh` делает всё это сам).
 
 ### 4.5 Установщик и портативный zip
+Перед упаковкой убедись, что в `dist/Raspoznavatel` ТОЛЬКО `App` и
+`Raspoznavatel.exe` (урок L35) — иначе в установщик попадёт ~200 МБ рабочих
+данных selftest.
 ```bash
-makensis -V2 installer.nsi          # → dist/Raspoznavatel-<ВЕРСИЯ>-Setup.exe (~455 МБ, ~6 мин)
+makensis -V2 installer.nsi          # → dist/Raspoznavatel-<ВЕРСИЯ>-Setup.exe (~455 МБ, ~7 мин)
 # ТРЕБОВАНИЕ ВЛАДЕЛЬЦА (2026-10-18): в КОРНЕ zip лежат Raspoznavatel.exe и App/,
 # БЕЗ вложенных dist/Raspoznavatel/ — архивируем СОДЕРЖИМОЕ папки:
 cd dist/Raspoznavatel
@@ -299,15 +306,31 @@ bash tools/gh-backup.sh push <папка> -m "то же сообщение"
   иначе «file not found» и «binary file matches».
 * **L17.** Свободного места < 5 ГБ → снеси `wineprefix`, `dist_console`,
   `build_src` ДО новой сборки → иначе сборка умрёт посередине на полном диске.
-* **L33.** Wine-шаг завершился (wineboot, pip, PyInstaller, selftest) → СРАЗУ
-  убей Wine и дождись пропадания зомби: `wineserver -k`, `pkill -f wine64`,
-  `pkill -f Xvfb`, `pkill -f xvfb-run` + несколько секунд ожидания в цикле
-  (нужен пакет `procps`, иначе `ps`/`pkill` просто нет), и только потом
-  начинай следующий шаг; всю пересборку гони одним
-  `bash tools/build_release_wine.sh all`, где уборка встроена после каждого
-  wine-вызова и в `trap EXIT` → иначе зомби копятся, песочница исчерпывает
-  лимит процессов, и сборка с уже готовым exe умирает на последнем шаге
-  (потерянная сессия 2026-10-18).
+* **L33.** Wine-шаг завершился (wineboot, pip, PyInstaller, selftest) → убери
+  дерево Wine ШТАТНО и дождись его: `wineserver -k` и СРАЗУ `wineserver -w`
+  (ждать выхода!), и только потом точечно `pkill -x Xvfb`, если он жив; весь
+  скрипт сборки запускай под субрепером `tini -s -- bash …` (пакет `tini`,
+  плюс `procps` ради `ps`/`pgrep`) → иначе PID 1 песочницы (node) чужих сирот
+  не подбирает, зомби от wine-процессов копятся сотнями, песочница исчерпывает
+  лимит процессов, и сборка умирает на ровном месте (потерянная сессия
+  2026-10-18). Агрессивный `pkill -f wine64` — худший вариант: он плодит
+  сирот и сам остаётся зомби. Готовый скрипт: `tools/build_release_wine.sh`
+  (этапы doctor/env/build/check/package/verify/all/clean) — уборка встроена
+  после каждого wine-вызова и в `trap EXIT`.
+* **L34.** Хочешь selftest собранного exe → гоняй `RASPOZ_SELFTEST=1` на САМОМ
+  `dist/Raspoznavatel/Raspoznavatel.exe` и читай отчёт из файла рядом с ним
+  (L15); консольную копию (`console=True`) не строй: в Wine 8.0 она не
+  загружается (`wine: failed to open … c0000135`), а stdout всё равно не нужен
+  → иначе минус 4 минуты и 800 МБ диска на каждом прогоне.
+* **L35.** Прогнал selftest → СРАЗУ снеси `dist/Raspoznavatel/Raspoznavatel_data`
+  и `dist/Raspoznavatel/Screenshots` (там распакованная модель перевода ~200 МБ,
+  логи, tmp) и проверь, что в папке остались только `App` и `Raspoznavatel.exe`
+  → иначе эти гигабайты уедут в установщик и в портативный zip к пользователю.
+* **L36.** Проверяешь архив листингом (`7z l … | grep -q …`) в скрипте с
+  `set -o pipefail` → сначала прочитай листинг ЦЕЛИКОМ в переменную, потом
+  грепь её (`grep -q` обрывает `7z` сигналом SIGPIPE, и с pipefail проверка
+  «падает» на полностью исправном архиве) → иначе ложный провал на последнем
+  шаге, когда всё уже собрано.
 
 ### Ресурсы
 * **L18.** `download_resources.py` сказал «готово» про модели перевода → всё
