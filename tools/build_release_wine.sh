@@ -319,7 +319,8 @@ cmd_smoke() {
   [[ -f "$PROJ/$script" ]] || die "нет $script — тест трея не написать нечем"
   rm -f "$PROJ/tray_smoke_report.txt"
   # L11: вывод ТОЛЬКО через pipe (tee), никакого «> файл» — иначе WinError 6
-  PYTHONIOENCODING=utf-8 wine_run_to "${SMOKE_TIMEOUT:-420}" "$WINPY_EXE" \
+  # -u: вывод БЕЗ буферизации — если тест встанет, в логе будет видно, на чём
+  PYTHONIOENCODING=utf-8 wine_run_to "${SMOKE_TIMEOUT:-300}" "$WINPY_EXE" -u \
       "$(wpath "$PROJ/$script")" || log "[!] wine вернул ненулевой код — смотрю отчёт"
   wine_cleanup "после smoke-теста трея"
   local rep="$PROJ/tray_smoke_report.txt"

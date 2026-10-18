@@ -54,6 +54,8 @@ def check(name, cond, extra=""):
     else:
         FAIL += 1
         RESULTS.append("FAIL " + name + ("  | " + str(extra) if extra else ""))
+    # печатаем СРАЗУ: если тест где-то встанет, в логе будет видно, на чём
+    print(RESULTS[-1], flush=True)
 
 
 def pump_ok(t, limit=4.0):
@@ -88,6 +90,7 @@ def main():
         if hang.is_set():
             time.sleep(3600)      # «GUI-поток занят»: колбэк виснет намертво
 
+    print(">>> старт: создаю TrayIcon", flush=True)
     t = tray.TrayIcon(on_show=on_show,
                       on_exit=lambda: calls.__setitem__("exit", calls["exit"] + 1),
                       on_toggle=lambda: calls.__setitem__("toggle", calls["toggle"] + 1),
@@ -96,6 +99,7 @@ def main():
 
     # Wine может не иметь настоящей области уведомлений: если значок не создался,
     # подменяем Shell_NotifyIconW заглушкой — логика окна/насоса/watchdog та же.
+    print(">>> start(): жду значок", flush=True)
     t.start()
     real_notify = ctypes.windll.shell32.Shell_NotifyIconW
     if not wait_for(lambda: t.icon_shown, timeout=8.0):
@@ -119,8 +123,8 @@ def main():
     # --- 1-2: окно трея, поток, пульс -----------------------------------------
     check("поток трея жив", t._thread is not None and t._thread.is_alive())
     check("скрытое окно трея создано", bool(t._hwnd), t._hwnd)
-    check("класс окна — RaspoznavatelTrayClass (его ищет второй экземпляр)",
-          bool(user32.FindWindowW(tray.TRAY_CLASS, None)))
+    check("окно трея находится по заголовку (его ищет второй экземпляр)",
+          bool(tray.find_tray_hwnd()))
     check("значок в трее есть (icon_shown)", t.icon_shown is True)
     check("таймер-пульс поставлен (SetTimer)", bool(t._timer_id), t._timer_id)
     beat0 = t._last_beat
@@ -175,7 +179,7 @@ def main():
           "restarts=%s" % t._restarts)
     check("после перезапуска трей снова здоров", wait_for(lambda: t.healthy(), 25.0))
     check("новое окно трея найдено вторым экземпляром",
-          bool(user32.FindWindowW(tray.TRAY_CLASS, None)) and t._hwnd != old_hwnd)
+          bool(tray.find_tray_hwnd()) and t._hwnd != old_hwnd)
     check("поколение потока выросло: старый поток больше не главный",
           t._generation > old_gen)
     del t._probe_icon                 # возвращаем штатную проверку значка
@@ -190,6 +194,7 @@ def main():
         check("WM_TIMER запускает проверку значка (NIM_MODIFY)",
               wait_for(lambda: counter["modify"] >= 1, 6.0), counter)
 
+    print(">>> stop()", flush=True)
     t.stop()
     time.sleep(1.0)
     check("stop(): поток трея остановлен", t._thread is None or not t._thread.is_alive()
@@ -203,8 +208,11 @@ def main():
     except Exception:
         pass
     print("")
-    print(text)
-    return 0 if FAIL == 0 else 1
+    print(text, flush=True)
+    sys.stdout.flush()
+    # Wine не всегда корректно завершает процесс с висящими daemon-потоками:
+    # выходим жёстко, как это делает main.py после закрытия окна.
+    os._exit(0 if FAIL == 0 else 1)
 
 
 if __name__ == "__main__":

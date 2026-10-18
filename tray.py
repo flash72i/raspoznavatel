@@ -96,12 +96,16 @@ WM_TIMER = 0x0113
 WM_LBUTTONDBLCLK = 0x0203
 
 # --- v2.6.1: надёжность трея ---
-TRAY_CLASS = "RaspoznavatelTrayClass"   # класс скрытого окна-владельца значка
+TRAY_CLASS = "RaspoznavatelTrayClass"   # база имени класса окна-владельца значка
+TRAY_WINDOW_TITLE = "RaspoznavatelTray"  # заголовок окна трея: по нему нас ищет
+                                         # второй экземпляр программы
 TRAY_TIMER_ID = 1
 HEARTBEAT_MS = 1000            # пульс насоса: WM_TIMER раз в секунду
 PUMP_STALE_AFTER = 6.0         # с без пульса → цикл сообщений считается мёртвым
 ICON_PROBE_EVERY = 5.0         # с: раз в 5 проверяем значок через NIM_MODIFY
 WATCHDOG_EVERY = 2.0           # с: период watchdog'а
+STARTUP_GRACE = 10.0           # с: новому потоку разрешено возиться со значком
+RESTART_COOLDOWN = 15.0        # с: между перезапусками трея (без шквала)
 SHOW_ACK_EVENT = "Raspoznavatel_Show_Ack"  # «первый экземпляр жив и показал окно»
 SHOW_ACK_TIMEOUT = 2.0         # с: сколько второй экземпляр ждёт подтверждения
 WAIT_OBJECT_0 = 0
@@ -158,6 +162,16 @@ def menu_items(visible: bool):
     ]
 
 
+def tray_class_name(generation=0):
+    """
+    Чистая функция: имя класса окна трея для ПОКОЛЕНИЯ потока.
+    Каждое поколение регистрирует СВОЙ класс: если старый поток залип, его окно
+    и класс остаются живы, и создание окна того же класса в новом потоке может
+    не удаться (проверено в Wine) — новый класс устраняет конфликт напрочь.
+    """
+    return TRAY_CLASS if not generation else "%s%d" % (TRAY_CLASS, generation)
+
+
 def pump_is_stale(last_beat, now=None, limit=PUMP_STALE_AFTER, in_menu=False):
     """
     Чистая функция: насос сообщений не подаёт признаков жизни?
@@ -172,10 +186,17 @@ def pump_is_stale(last_beat, now=None, limit=PUMP_STALE_AFTER, in_menu=False):
 
 
 def watchdog_action(icon_shown, thread_alive, last_beat, in_menu=False,
-                    running=True, now=None):
+                    running=True, now=None, thread_age=None, since_restart=None):
     """
     Чистая функция: решение watchdog'а.
+    :param thread_age: сколько секунд живёт текущий поток трея (None = неизвестно)
+    :param since_restart: сколько секунд прошло с последнего перезапуска
     :return: (действие, причина), действие ∈ {"ok", "restart", "stop"}
+
+    Молодому потоку даём `STARTUP_GRACE` секунд на создание окна и значка
+    (у него свои 5 попыток внутри `_run`), а между перезапусками выдерживаем
+    `RESTART_COOLDOWN` — иначе watchdog устраивает шквал перезапусков и трей
+    не успевает создаться ни разу.
     """
     if not running:
         return ("stop", "трей остановлен")
@@ -186,6 +207,10 @@ def watchdog_action(icon_shown, thread_alive, last_beat, in_menu=False,
     if pump_is_stale(last_beat, now=now, in_menu=in_menu):
         return ("restart", "насос сообщений не отвечает")
     if not icon_shown:
+        if thread_age is not None and thread_age < STARTUP_GRACE:
+            return ("ok", "поток ещё создаёт значок")
+        if since_restart is not None and since_restart < RESTART_COOLDOWN:
+            return ("ok", "недавний перезапуск: даём значку появиться")
         return ("restart", "значок пропал")
     return ("ok", "")
 
@@ -203,6 +228,17 @@ def single_instance_decision(mutex_exists, hwnd_found, post_ok, ack_ok):
     if hwnd_found and post_ok and ack_ok:
         return "opened"
     return "takeover"
+
+
+def find_tray_hwnd():
+    """HWND окна трея НАШЕГО процесса: ищем по заголовку (класс у каждого
+    поколения свой — см. tray_class_name)."""
+    if os.name != "nt":
+        return None
+    user32 = ctypes.windll.user32
+    user32.FindWindowW.restype = ctypes.c_void_p
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    return user32.FindWindowW(None, TRAY_WINDOW_TITLE)
 
 
 def claim_single_instance(ack_timeout=SHOW_ACK_TIMEOUT):
@@ -239,7 +275,7 @@ def claim_single_instance(ack_timeout=SHOW_ACK_TIMEOUT):
     hwnd = None
     post_ok = ack_ok = False
     if mutex_exists:
-        hwnd = user32.FindWindowW(TRAY_CLASS, None)
+        hwnd = find_tray_hwnd()
         ack = None
         try:
             # auto-reset событие: ждём СВЕЖЕГО подтверждения первого экземпляра
@@ -470,6 +506,8 @@ class TrayIcon:
         self._ack = None             # событие подтверждения второму экземпляру
         self._restarts = 0           # сколько раз перезапускали поток трея
         self._generation = 0         # поколение потока: старое не мешает новому
+        self._thread_started_at = time.time()   # возраст текущего потока трея
+        self._last_restart_at = 0.0             # когда последний раз перезапускали
         self._stopped = False
         # самоотрисовка включена; если WM_DRAWITEM хоть раз не сможет
         # отработать — навсегда переключимся на системное меню (MF_STRING)
@@ -711,25 +749,28 @@ class TrayIcon:
         user32 = ctypes.windll.user32
         hinst = ctypes.windll.kernel32.GetModuleHandleW(None)
         self._proc = WNDPROC(self._wnd_proc)  # ссылка от сборщика мусора
+        class_name = tray_class_name(self._generation)
         wc = WNDCLASSW()
         wc.style = 0
         wc.lpfnWndProc = self._proc
         wc.hInstance = hinst
-        wc.lpszClassName = TRAY_CLASS
+        wc.lpszClassName = class_name
         user32.RegisterClassW(ctypes.byref(wc))  # False = класс уже есть
         try:
             # сообщение «explorer перезапустился» — чтобы вернуть значок
             self._taskbar_msg = user32.RegisterWindowMessageW("TaskbarCreated")
         except Exception:
             self._taskbar_msg = 0
-        for attempt in (1, 2):
+        for attempt in (1, 2, 3, 4):
             self._hwnd = user32.CreateWindowExW(
-                0, wc.lpszClassName, "RaspoznavatelTray",
+                0, class_name, TRAY_WINDOW_TITLE,
                 0, 0, 0, 0, 0, None, None, hinst, None)
             if self._hwnd:
                 return True
-            log.warn(f"Трей: не удалось создать скрытое окно (попытка {attempt})")
-            time.sleep(0.2)
+            log.warn(f"Трей: не удалось создать скрытое окно "
+                     f"(попытка {attempt}, GetLastError="
+                     f"{ctypes.GetLastError()})")
+            time.sleep(0.4)
         log.error("Трей: скрытое окно не создалось — значка не будет")
         return False
 
@@ -869,6 +910,8 @@ class TrayIcon:
             self.icon_shown = False
             self._running = True
             self._generation += 1     # старое поколение больше не «главное»
+            self._last_restart_at = time.time()
+            self._thread_started_at = self._last_restart_at
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
 
@@ -897,9 +940,10 @@ class TrayIcon:
         self._stopped = False
         self._last_beat = time.time()
         self._generation += 1
+        self._thread_started_at = time.time()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
-        # watchdog: раз в 5 с проверяет, что значок на месте, и возвращает его
+        # watchdog: раз в несколько секунд проверяет значок И пульс насоса
         self._watch = threading.Thread(target=self._watchdog, daemon=True)
         self._watch.start()
         return True
@@ -916,13 +960,17 @@ class TrayIcon:
             time.sleep(WATCHDOG_EVERY)
             if not self._running:
                 return
+            now = time.time()
             action, reason = watchdog_action(
                 icon_shown=self.icon_shown,
                 thread_alive=bool(self._thread is not None
                                   and self._thread.is_alive()),
                 last_beat=self._last_beat,
                 in_menu=self._in_menu,
-                running=self._running)
+                running=self._running,
+                now=now,
+                thread_age=now - self._thread_started_at,
+                since_restart=now - self._last_restart_at)
             if action == "restart":
                 self._restart(reason)
 
