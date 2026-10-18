@@ -398,11 +398,25 @@ r = a10.save_settings({**a10._settings, "close_action": "tray"})
 check("close_action=tray сохранён", r.get("ok") is True and r.get("close_action") == "tray")
 class _FakeTray:
     stopped = False
+    icon_shown = True
     def stop(self): self.stopped = True
+    def ensure_icon(self, timeout=0): return self.icon_shown
+    def notify(self, title, text): return True
 a10._tray = _FakeTray()
 r = a10.win_close()
 check("✕ при tray: окно спрятано, НЕ уничтожено",
       r.get("minimized_to_tray") is True and "hide" in w10.ops and "destroy" not in w10.ops, str(w10.ops))
+class _DeadTray(_FakeTray):
+    icon_shown = False
+    def ensure_icon(self, timeout=0): return False
+a10._tray = _DeadTray()
+a10.save_settings({**a10._settings, "close_action": "tray"})
+w10.ops.clear()
+r = a10.win_close()
+time.sleep(0.8)
+check("v2.6: трей НЕздоров → ✕ закрывает полностью (нет процесса без окна)",
+      r.get("minimized_to_tray") is not True and "destroy" in w10.ops, str(w10.ops))
+a10._tray = _FakeTray()
 r = a10.save_settings({**a10._settings, "close_action": "exit"})
 check("close_action=exit сохранён", r.get("ok") is True)
 w10.ops.clear()
@@ -539,6 +553,11 @@ check("есть фолбэк на системное меню (MF_STRING), ес�
       "MF_STRING" in _src and "_ownerdraw_failed" in _src)
 check("отрисовка пункта защищена try/except (сбой не роняет цикл сообщений)",
       "except Exception" in _inspect.getsource(tray_mod.TrayIcon._wnd_proc))
+check("v2.6: трей умеет проверять здоровье и пересоздавать значок",
+      hasattr(tray_mod.TrayIcon, "ensure_icon") and hasattr(tray_mod.TrayIcon, "_add_icon"))
+check("v2.6: всплывающая подсказка у значка (balloon) для стрелки ^",
+      hasattr(tray_mod.TrayIcon, "notify")
+      and tray_mod.NIF_INFO == 0x10 and tray_mod.NIM_MODIFY == 1)
 
 print("\n--- 21. v2.6: скрытие консольных окон (proc) ---")
 import proc as proc_mod  # noqa: E402

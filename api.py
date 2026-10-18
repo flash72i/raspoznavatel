@@ -418,13 +418,35 @@ class Api:
         action = str(self._settings.get("close_action") or "exit").lower()
         if action == "tray":
             if self._tray is not None:
+                # v2.6.0: проверяем ЗДОРОВЬЕ трея: если значок не создался
+                # (поток погиб, система отказала) — пробуем создать заново.
+                # Иначе «свернуть в трей» оставит процесс БЕЗ окна и без значка.
                 try:
-                    self._window.hide()
-                    self._visible = False
-                    log.info("✕: программа свёрнута в трей (настройка close_action=tray)")
-                    return {"ok": True, "closed": False, "minimized_to_tray": True}
+                    healthy = self._tray.ensure_icon()
                 except Exception as exc:
-                    log.error(f"Не удалось свернуть в трей ({exc}) — закрываю полностью")
+                    log.error(f"Проверка здоровья трея не удалась: {exc}")
+                    healthy = False
+                if healthy:
+                    try:
+                        self._window.hide()
+                        self._visible = False
+                        if not getattr(self, "_tray_hint_shown", False):
+                            self._tray_hint_shown = True
+                            try:
+                                self._tray.notify(
+                                    "Распознаватель",
+                                    "Программа свёрнута в трей. Если значка не "
+                                    "видно: нажмите стрелку ^ у часов и "
+                                    "закрепите значок там.")
+                            except Exception:
+                                pass
+                        log.info("✕: программа свёрнута в трей (настройка close_action=tray)")
+                        return {"ok": True, "closed": False, "minimized_to_tray": True}
+                    except Exception as exc:
+                        log.error(f"Не удалось свернуть в трей ({exc}) — закрываю полностью")
+                else:
+                    log.warn("close_action=tray, но значок трея не создался — "
+                             "закрываю программу полностью")
             else:
                 log.warn("close_action=tray, но трей недоступен — закрываю программу полностью")
         log.info("Закрытие приложения по кнопке ✕")
