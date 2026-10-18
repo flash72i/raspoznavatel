@@ -315,7 +315,8 @@ bash tools/gh-backup.sh push <папка> -m "то же сообщение"
 * **L24.** Меняешь видимость/описание репо через API → в теле PATCH обязаны быть
   `name` и `private` → иначе 422 или молчаливый игнор.
 * **L25.** Заливаешь ассеты >100 МБ → стримингом на `upload_url` релиза
-  (`urlopen(req, file_object)`) → иначе OOM на чтении файла целиком в память.
+  (`urlopen(req, file_object)`) И с явным заголовком `Content-Length`
+  (размер файла) → иначе GitHub вернёт 422 Validation Failed (field: size).
 * **L26.** Поднимаешь версию → синхронно правь `config.py`, `installer.nsi`
   (6 мест), `README` → иначе установщик и программа спорят о версии.
 
