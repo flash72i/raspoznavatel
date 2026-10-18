@@ -205,10 +205,17 @@ def step_tesseract():
 
     print("[установка] Тихая установка Tesseract (появится один запрос UAC — нажмите «Да»)…")
     import subprocess
+    kw = {}
+    if os.name == "nt":
+        # v2.6.0: консоль установщика не мелькает
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+        kw = {"creationflags": 0x08000000, "startupinfo": si}  # CREATE_NO_WINDOW
     try:
         subprocess.run(
             [installer, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"],
-            check=True, timeout=600,
+            check=True, timeout=600, **kw
         )
     except Exception as exc:
         print(f"[ВНИМАНИЕ] Тихая установка не удалась: {exc}")

@@ -47,6 +47,11 @@ try:
     _cmd = config.find_tesseract_cmd()
     if _cmd:
         pytesseract.pytesseract.tesseract_cmd = _cmd
+    # v2.6.0: tesseract.exe запускает сама библиотека pytesseract — без флагов
+    # скрытия Windows показывала бы чёрное окно консоли на каждое распознавание.
+    # Прокидываем CREATE_NO_WINDOW внутрь библиотеки (см. proc.py).
+    import proc
+    proc.patch_module(pytesseract.pytesseract)
     PYTESSERACT_AVAILABLE = True
 except Exception:  # pragma: no cover
     PYTESSERACT_AVAILABLE = False

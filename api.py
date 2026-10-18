@@ -36,7 +36,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import threading
 import time
 import traceback
@@ -46,6 +45,7 @@ from datetime import datetime
 import config
 import log
 import ocr
+import proc
 import qr_reader
 import screen_capture
 import translator
@@ -625,12 +625,11 @@ class Api:
                 os.path.dirname(exe).replace("'", "''"),
                 (config.executable_path()).replace("'", "''"),
             )
-            kwargs = {}
-            if os.name == "nt":
-                kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-            r = subprocess.run(
+            # v2.6.0: единая точка скрытия консоли (proc.run) —
+            # окно powershell не мелькает при включении автозапуска
+            r = proc.run(
                 ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                capture_output=True, text=True, timeout=60, **kwargs,
+                capture_output=True, text=True, timeout=60,
             )
             if r.returncode == 0 and os.path.isfile(lnk):
                 log.ok(f"Автозапуск включён: {lnk}")

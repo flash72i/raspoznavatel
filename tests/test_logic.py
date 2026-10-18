@@ -527,5 +527,74 @@ check("в меню есть разделитель и «Выход»",
 check("цвета меню заданы явно (тёмный фон, светлый текст)",
       tray_mod.MENU_BG != tray_mod.MENU_TEXT and tray_mod.MENU_BG[0] < 128 < tray_mod.MENU_TEXT[0])
 
+print("\n--- 20. v2.6: трей — 64-битные типы сообщений и фолбэк меню ---")
+import ctypes as _ct  # noqa: E402
+import inspect as _inspect  # noqa: E402
+check("WPARAM/LPARAM/LRESULT 64-битные на x64 (причина «белого меню» v2.5)",
+      _ct.sizeof(tray_mod.WPARAM_T) == _ct.sizeof(_ct.c_void_p)
+      and _ct.sizeof(tray_mod.LPARAM_T) == _ct.sizeof(_ct.c_void_p)
+      and _ct.sizeof(tray_mod.LRESULT_T) == _ct.sizeof(_ct.c_void_p))
+_src = _inspect.getsource(tray_mod)
+check("есть фолбэк на системное меню (MF_STRING), если самоотрисовка сбоит",
+      "MF_STRING" in _src and "_ownerdraw_failed" in _src)
+check("отрисовка пункта защищена try/except (сбой не роняет цикл сообщений)",
+      "except Exception" in _inspect.getsource(tray_mod.TrayIcon._wnd_proc))
+
+print("\n--- 21. v2.6: скрытие консольных окон (proc) ---")
+import proc as proc_mod  # noqa: E402
+kw = proc_mod.inject({}, force=True)
+check("inject добавляет CREATE_NO_WINDOW",
+      kw.get("creationflags") == proc_mod.CREATE_NO_WINDOW)
+kw2 = proc_mod.inject({"creationflags": 0x00000008}, force=True)  # DETACHED
+check("inject сохраняет чужие флаги (OR, а не замена)",
+      kw2["creationflags"] == (0x00000008 | proc_mod.CREATE_NO_WINDOW))
+
+
+class _FakeSP:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, *a, **k):
+        self.calls.append(("run", a, k))
+        return "ok"
+
+    def Popen(self, *a, **k):  # noqa: N802
+        self.calls.append(("Popen", a, k))
+        return "popen"
+
+    PIPE = -1
+
+
+fake = _FakeSP()
+wrapped = proc_mod._SilentSubprocess(fake)
+# эмулируем Windows: на Linux флаги честно НЕ добавляются
+import types as _types  # noqa: E402
+_real_os, _real_sp = proc_mod.os, proc_mod.subprocess
+proc_mod.os = _types.SimpleNamespace(name="nt")
+proc_mod.subprocess = _types.SimpleNamespace(
+    STARTUPINFO=lambda: _types.SimpleNamespace(dwFlags=0))
+try:
+    wrapped.run(["x"], creationflags=0)
+    wrapped.Popen(["y"])
+finally:
+    proc_mod.os, proc_mod.subprocess = _real_os, _real_sp
+check("обёртка прокидывает флаги в чужой subprocess (run/Popen)",
+      fake.calls[0][2].get("creationflags") == proc_mod.CREATE_NO_WINDOW
+      and fake.calls[1][2].get("creationflags") == proc_mod.CREATE_NO_WINDOW
+      and fake.calls[0][2].get("startupinfo") is not None)
+check("обёртка отдаёт чужие атрибуты (PIPE) как есть", wrapped.PIPE == -1)
+
+
+class _Lib:
+    subprocess = _FakeSP()
+
+
+proc_mod.patch_module(_Lib)
+check("patch_module подменяет subprocess у библиотеки",
+      isinstance(_Lib.subprocess, proc_mod._SilentSubprocess))
+proc_mod.patch_module(_Lib)
+check("повторный patch_module безопасен (не заворачивает дважды)",
+      isinstance(_Lib.subprocess._real, _FakeSP))
+
 print(f"\nИТОГ: {PASS} пройдено, {FAIL} провалено")
 sys.exit(0 if FAIL == 0 else 1)
