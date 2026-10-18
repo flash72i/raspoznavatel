@@ -153,6 +153,9 @@ def main():
 
     # v2.6.0: ОДИН экземпляр программы. Повторный двойной клик по exe
     # не плодит второй процесс, а открывает окно уже работающего.
+    # v2.6.1: если работающий экземпляр НЕ подтвердил, что показал окно
+    # (завис, значок мёртв), claim_single_instance вернёт True — и этот
+    # процесс запустится сам. Ситуация «программа не запускается» исключена.
     try:
         import tray as _tray_single
         if not _tray_single.claim_single_instance():
@@ -202,18 +205,21 @@ def main():
         import tray
 
         def tray_show():
+            """v2.6.1: показ окна ТОЛЬКО через Win32 (api.win_force_show).
+            pywebview-вызов show() — это синхронный Invoke в GUI-поток: из
+            потока трея он вставал намертво, и иконка переставала реагировать."""
             try:
-                window.show()
-                api.win_restore_from_tray()
+                api.win_force_show()
             except Exception as exc:
                 log.error(f"Не удалось показать окно из трея: {exc}")
 
         def tray_toggle():
-            """v2.5: клик левой кнопкой по иконке трея — показать, если окно
-            спрятано, и спрятать, если оно открыто."""
+            """Пункт меню трея «Показать/Скрыть окно».
+            v2.6.1: левый клик по иконке ВСЕГДА показывает окно (tray_show),
+            спрятать окно можно только этим пунктом меню или кнопкой ✕."""
             try:
                 if api._visible:
-                    api.win_hide_to_tray()
+                    api.win_force_hide()
                 else:
                     tray_show()
             except Exception as exc:
@@ -227,6 +233,9 @@ def main():
             is_visible=lambda: bool(api._visible),
         )
         api._tray.start()
+        # v2.6.1: страховка — если окно спрятано, а трей перестал отвечать,
+        # программа сама вернёт окно на экран (пользователь не «теряется»)
+        api.start_tray_safety_net()
     except Exception as exc:
         log.warn(f"Трей недоступен: {exc}")
 
@@ -270,6 +279,7 @@ def main():
         threading.Thread(target=started_worker, daemon=True).start()
 
     def on_closing():
+        api._closing = True      # v2.6.1: остановить страховку трея
         # журнал больше не шлём в UI (окно закрывается; evaluate_js в этот
         # момент ломает закрытие в GTK-бэкенде) — запись в файл продолжается
         try:

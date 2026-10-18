@@ -8,6 +8,7 @@
 #   bash tools/build_release_wine.sh build     # PyInstaller -> dist/Raspoznavatel/
 #   bash tools/build_release_wine.sh check     # selftest готового exe (10 блоков)
 #   bash tools/build_release_wine.sh package   # Setup.exe + портативный zip
+#   bash tools/build_release_wine.sh smoke     # дымовой тест трея в Wine (Win32)
 #   bash tools/build_release_wine.sh verify    # проверить УЖЕ собранные ассеты
 #   bash tools/build_release_wine.sh all       # всё по порядку (doctor..package)
 #   bash tools/build_release_wine.sh clean     # убрать временные гигабайты
@@ -305,6 +306,31 @@ PY
   log "check: в корне папки → $(ls "$bundle" | tr '\n' ' ')"
 }
 
+# ------------------------------------------------------------------- smoke ---
+# Дымовой тест трея НА НАСТОЯЩЕМ Win32 (в Wine): значок создаётся в потоке
+# насоса, клики работают, зависший колбэк не глушит насос, watchdog перезапускает
+# «мёртвый» трей, повторный запуск exe открывает окно. Юнит-тесты на Linux этого
+# не видят — именно так v2.6.0 уехала к владельцу с нерабочей иконкой.
+cmd_smoke() {
+  say "smoke: дымовой тест трея в Wine (tests/tray_win_smoke.py)"
+  cd "$PROJ" || die "нет папки проекта"
+  [[ -f "$WINPY_DIR/python.exe" ]] || die "сначала выполни: bash $0 env"
+  local script="tests/tray_win_smoke.py"
+  [[ -f "$PROJ/$script" ]] || die "нет $script — тест трея не написать нечем"
+  rm -f "$PROJ/tray_smoke_report.txt"
+  # L11: вывод ТОЛЬКО через pipe (tee), никакого «> файл» — иначе WinError 6
+  PYTHONIOENCODING=utf-8 wine_run_to "${SMOKE_TIMEOUT:-420}" "$WINPY_EXE" \
+      "$(wpath "$PROJ/$script")" || log "[!] wine вернул ненулевой код — смотрю отчёт"
+  wine_cleanup "после smoke-теста трея"
+  local rep="$PROJ/tray_smoke_report.txt"
+  [[ -f "$rep" ]] || die "нет отчёта smoke-теста ($rep)"
+  cat "$rep"
+  mkdir -p "$LOG_DIR"; cp -f "$rep" "$LOG_DIR/" 2>/dev/null || true
+  grep -qE "SMOKE TRAY: [0-9]+ пройдено, 0 провалено" "$rep" \
+    || die "дымовой тест трея ПРОВАЛЕН — релиз не публикуй"
+  log "smoke: иконка отвечает на клики, watchdog чинит насос, повторный запуск открывает окно"
+}
+
 # ----------------------------------------------------------------- package ---
 cmd_package() {
   say "package: установщик NSIS + портативный zip"
@@ -406,7 +432,7 @@ cmd_clean() {
 }
 
 # --------------------------------------------------------------------- all ---
-cmd_all() { cmd_doctor; cmd_env; cmd_build; cmd_check; cmd_package; }
+cmd_all() { cmd_doctor; cmd_env; cmd_build; cmd_check; cmd_smoke; cmd_package; cmd_verify; }
 
 usage() {
   cat <<USAGE
@@ -416,7 +442,7 @@ build_release_wine.sh — пересборка релиза «Распознав
 Ассеты:   $RELEASE_DIR
 Версия:   $VERSION
 
-Этапы: doctor | env | build | check | package | verify | all | clean
+Этапы: doctor | env | build | check | smoke | package | verify | all | clean
 USAGE
 }
 
@@ -438,6 +464,7 @@ case "${1:-all}" in
   build)   cmd_build ;;
   check)   cmd_check ;;
   package) cmd_package ;;
+  smoke)   cmd_smoke ;;
   verify)  cmd_verify ;;
   clean)   cmd_clean ;;
   all)     cmd_all ;;

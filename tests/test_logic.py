@@ -16,6 +16,7 @@ test_logic.py — юнит-тесты логики «Распознавател�
 8. ротация файла журнала.
 """
 
+import io
 import os
 import sys
 import tempfile
@@ -621,6 +622,158 @@ check("patch_module подменяет subprocess у библиотеки",
 proc_mod.patch_module(_Lib)
 check("повторный patch_module безопасен (не заворачивает дважды)",
       isinstance(_Lib.subprocess._real, _FakeSP))
+
+print("\n--- 22. v2.6.1: иконка трея ОТВЕЧАЕТ, программа всегда запускается ---")
+import threading as _th  # noqa: E402
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_main_src = io.open(os.path.join(_ROOT, "main.py"), encoding="utf-8").read() \
+    if hasattr(io, "open") else open(os.path.join(_ROOT, "main.py"), encoding="utf-8").read()
+
+# 22.1 watchdog: следит за ЖИВЫМ насосом, а не только за значком
+_now = time.time()
+check("watchdog: здоровый трей → ok",
+      tray_mod.watchdog_action(True, True, _now)[0] == "ok")
+check("watchdog: насос молчит 30 с → restart (главная причина «мёртвой» иконки)",
+      tray_mod.watchdog_action(True, True, _now - 30)[0] == "restart"
+      and "насос" in tray_mod.watchdog_action(True, True, _now - 30)[1])
+check("watchdog: поток трея погиб → restart",
+      tray_mod.watchdog_action(True, False, _now)[0] == "restart")
+check("watchdog: значок пропал → restart",
+      tray_mod.watchdog_action(False, True, _now)[0] == "restart")
+check("watchdog: открытое меню трея НЕ считается зависанием",
+      tray_mod.watchdog_action(True, True, 0, in_menu=True)[0] == "ok")
+check("watchdog: остановленный трей не перезапускается",
+      tray_mod.watchdog_action(True, True, _now, running=False)[0] == "stop")
+check("pump_is_stale: свежий пульс → жив", tray_mod.pump_is_stale(_now, now=_now) is False)
+check("pump_is_stale: пульса никогда не было → мёртв", tray_mod.pump_is_stale(0, now=_now) is True)
+
+# 22.2 повторный запуск программы: «не запускается» исключено
+check("single-instance: мы первые → first",
+      tray_mod.single_instance_decision(False, False, False, False) == "first")
+check("single-instance: первый экземпляр ответил → opened",
+      tray_mod.single_instance_decision(True, True, True, True) == "opened")
+check("single-instance: первый НЕ ответил → takeover (запускаемся сами)",
+      tray_mod.single_instance_decision(True, True, True, False) == "takeover")
+check("single-instance: окна-владельца нет → takeover",
+      tray_mod.single_instance_decision(True, False, False, False) == "takeover")
+_src_claim = _inspect.getsource(tray_mod.claim_single_instance)
+check("подтверждение первого экземпляра: событие + ожидание ответа",
+      "SHOW_ACK_EVENT" in _src_claim and "WaitForSingleObject" in _src_claim
+      and "ResetEvent" in _src_claim)
+
+# 22.3 значок создаёт ТОЛЬКО поток с насосом (иначе «муляж»)
+check("_add_icon отказывается работать вне потока насоса",
+      "current_thread() is not self._thread" in _inspect.getsource(tray_mod.TrayIcon._add_icon))
+_src_watch = _inspect.getsource(tray_mod.TrayIcon._watchdog)
+check("watchdog НЕ создаёт окно/значок сам (только перезапуск потока)",
+      "_add_icon" not in _src_watch and "_ensure_window" not in _src_watch
+      and "_restart" in _src_watch and "watchdog_action" in _src_watch)
+check("_restart создаёт НОВЫЙ поток трея (новое окно + новый значок)",
+      "Thread(target=self._run" in _inspect.getsource(tray_mod.TrayIcon._restart))
+
+# 22.4 пульс насоса и потерянный значок
+_src_tray = _inspect.getsource(tray_mod)
+check("пульс насоса: WM_TIMER раз в секунду",
+      tray_mod.WM_TIMER == 0x0113 and "SetTimer" in _src_tray
+      and tray_mod.HEARTBEAT_MS == 1000)
+check("значок проверяется NIM_MODIFY (система теряет значки после перезапуска explorer)",
+      "NIM_MODIFY" in _inspect.getsource(tray_mod.TrayIcon._probe_icon))
+check("перезапуск explorer: обрабатываем TaskbarCreated",
+      "TaskbarCreated" in _src_tray and "_taskbar_msg" in _src_tray)
+
+# 22.5 клики не блокируют насос; левый клик всегда ПОКАЗЫВАЕТ окно
+_src_proc = _inspect.getsource(tray_mod.TrayIcon._wnd_proc)
+_branch = _src_proc.split("if msg == WM_TRAYICON:")[1].split("if msg == WM_RASPOZ_SHOW")[0]
+check("левый/двойной клик → показ окна (спрятать окно кликом больше нельзя)",
+      "WM_LBUTTONUP" in _branch and "WM_LBUTTONDBLCLK" in _branch
+      and "_call_show" in _branch and "_call_toggle" not in _branch)
+check("правый клик → меню (из потока насоса)", "_show_menu" in _branch)
+check("колбэки кликов уходят в отдельный поток — насос не блокируется",
+      "_spawn" in _branch and "threading.Thread" in _inspect.getsource(tray_mod.TrayIcon._spawn))
+check("WM_RASPOZ_SHOW: сначала подтверждаем жизнь, потом показываем окно",
+      "_signal_ack" in _src_proc and "_call_show" in _src_proc)
+check("main: показ окна из трея через Win32 (api.win_force_show), без window.show()",
+      "api.win_force_show()" in _main_src and "window.show()" not in _main_src)
+check("меню трея помечается как модальное (watchdog не убьёт трей во время меню)",
+      "_in_menu" in _inspect.getsource(tray_mod.TrayIcon._show_menu))
+
+# 22.6 healthy() — условие, при котором вообще разрешено прятать окно
+t22 = tray_mod.TrayIcon(on_show=lambda: None, on_exit=lambda: None)
+t22._running = True
+t22.icon_shown = True
+t22._thread = _th.current_thread()      # «живой» поток
+t22._last_beat = time.time()
+check("healthy(): значок + живой поток + свежий пульс → True", t22.healthy() is True)
+t22._last_beat = time.time() - 30
+check("healthy(): насос молчит → False (трей будет перезапущен)", t22.healthy() is False)
+t22._in_menu = True
+check("healthy(): открытое меню не считается зависанием", t22.healthy() is True)
+t22._in_menu = False
+t22._last_beat = time.time()
+t22.icon_shown = False
+check("healthy(): нет значка → False", t22.healthy() is False)
+
+# 22.7 api: показ/скрытие окна без блокирующего Invoke
+a22, w22 = fresh_api()
+a22._win32_show_hide = lambda show: True
+a22._visible = False
+r = a22.win_force_show()
+check("win_force_show: Win32-путь НЕ трогает pywebview (нет блокировки GUI-потока)",
+      r.get("via") == "win32" and "show" not in w22.ops and a22._visible is True,
+      str(w22.ops))
+a22b, w22b = fresh_api()
+a22b._win32_show_hide = lambda show: False
+r = a22b.win_force_show()
+check("win_force_show: запасной путь pywebview, окно видно",
+      r.get("via") == "pywebview" and "show" in w22b.ops and a22b._visible is True)
+a22c, w22c = fresh_api()
+a22c._win32_show_hide = lambda show: True
+r = a22c.win_force_hide()
+check("win_force_hide: Win32-скрытие без pywebview",
+      r.get("via") == "win32" and a22c._visible is False and "hide" not in w22c.ops)
+
+# 22.8 страховка: пользователь не остаётся без окна
+check("страховка: окно видно → ничего не делаем",
+      api_mod.safety_net_action(True, False, 5) == ("idle", 0))
+check("страховка: трей здоров → ничего не делаем",
+      api_mod.safety_net_action(False, True, 5) == ("idle", 0))
+check("страховка: первый сбой трея → ждём самолечения",
+      api_mod.safety_net_action(False, False, 0) == ("wait", 1))
+check("страховка: трей не починился → возвращаем окно на экран",
+      api_mod.safety_net_action(False, False, 2) == ("show", 0))
+
+# 22.9 ✕ при close_action=tray: прячем окно И включаем страховку
+a23, w23 = fresh_api()
+w23.events.loaded.set(); time.sleep(0.6)
+class _HealthyTray:
+    icon_shown = True
+    stopped = False
+    def ensure_icon(self, timeout=0): return True
+    def healthy(self): return True
+    def stop(self): self.stopped = True
+    def notify(self, title, text, timeout_ms=10000): return True
+a23._tray = _HealthyTray()
+a23.save_settings({**a23._settings, "close_action": "tray"})
+r = a23.win_close()
+check("✕ при tray: окно спрятано, программа продолжает работать",
+      r.get("minimized_to_tray") is True and "destroy" not in w23.ops, str(w23.ops))
+check("✕ при tray: страховка включена (окно вернётся, если иконка умрёт)",
+      a23._net_started is True and a23._visible is False)
+a23._closing = True
+
+print("\n--- 23. v2.6.1: версия синхронна в config/installer/README ---")
+_cfg = io.open(os.path.join(_ROOT, "config.py"), encoding="utf-8").read()
+_nsi = io.open(os.path.join(_ROOT, "installer.nsi"), encoding="utf-8").read()
+_rdm = io.open(os.path.join(_ROOT, "README.md"), encoding="utf-8").read()
+_ver = config.APP_VERSION
+check("installer.nsi: OutFile и все поля версии = " + _ver,
+      f"Raspoznavatel-{_ver}-Setup.exe" in _nsi
+      and f'VIProductVersion "{_ver}.0"' in _nsi
+      and f'"FileVersion"     "{_ver}"' in _nsi
+      and f'"ProductVersion"  "{_ver}"' in _nsi
+      and f"Распознаватель {_ver}" in _nsi, _nsi[:80])
+check("README: версия та же", f"**{_ver}**" in _rdm and f"Raspoznavatel-{_ver}-Setup.exe" in _rdm)
+check("config.py: APP_VERSION прочитан из файла", f'APP_VERSION = "{_ver}"' in _cfg)
 
 print(f"\nИТОГ: {PASS} пройдено, {FAIL} провалено")
 sys.exit(0 if FAIL == 0 else 1)

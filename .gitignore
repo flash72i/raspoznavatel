@@ -24,6 +24,10 @@ Thumbs.db
 Raspoznavatel_data/
 Screenshots/
 
+# — Отчёты проверок (создаются при сборке/тестах в Wine) —
+tray_smoke_report.txt
+selftest_report.txt
+
 # — Модели перевода EN↔RU (195 и 149 МБ) превышают лимит GitHub 100 МБ на файл.
 # Это НЕ исходники: они автоматически скачиваются перед сборкой —
 # шаг [3/6] в build.bat или:  python tools/download_resources.py

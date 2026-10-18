@@ -58,6 +58,22 @@ IMAGE_FILTER = (
     "Все файлы (*.*)",
 )
 
+def safety_net_action(visible: bool, tray_healthy: bool, bad_streak: int,
+                      threshold: int = 3):
+    """
+    v2.6.1, чистая функция «страховки трея»: что делать, если окно спрятано.
+    :return: (действие, новый счётчик), действие ∈ {"idle", "wait", "show"}
+    Пользователь НЕ должен остаться без окна и без работающей иконки: если трей
+    несколько проверок подряд не здоров — окно возвращается на экран.
+    """
+    if visible or tray_healthy:
+        return ("idle", 0)
+    bad_streak += 1
+    if bad_streak >= threshold:
+        return ("show", 0)
+    return ("wait", bad_streak)
+
+
 # Коды диалогов pywebview (webview.OPEN_DIALOG / FOLDER_DIALOG / SAVE_DIALOG)
 OPEN_DIALOG = 10
 FOLDER_DIALOG = 20
@@ -175,6 +191,8 @@ class Api:
         self._visible = True                 # видно ли окно (для захвата экрана)
         self._hwnd = None                    # кэш HWND главного окна
         self._tray = None                    # иконка в трее (создаётся из main)
+        self._closing = False                # программа закрывается (v2.6.1)
+        self._net_started = False            # страховка трея запущена (v2.6.1)
         self._busy = False
         self._preload_started = False   # прогрев перевода запускается один раз
         self._history_lock = threading.Lock()   # история распознаваний (v2.5)
@@ -326,6 +344,20 @@ class Api:
             import ctypes
             from ctypes import wintypes
             user32 = ctypes.windll.user32
+            # урок L6: на x64 дескрипторы обязаны быть 64-битными, иначе HWND
+            # обрезается и вызовы молча бьют «мимо» окна
+            user32.FindWindowW.restype = ctypes.c_void_p
+            user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+            user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+            user32.GetWindowThreadProcessId.argtypes = [
+                wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+            user32.GetWindowTextLengthW.restype = ctypes.c_int
+            user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+            user32.GetWindowTextW.restype = ctypes.c_int
+            user32.GetWindowTextW.argtypes = [
+                wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+            user32.EnumWindows.restype = wintypes.BOOL
+            user32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
 
             def pid_of(hwnd):
                 p = wintypes.DWORD()
@@ -418,9 +450,9 @@ class Api:
         action = str(self._settings.get("close_action") or "exit").lower()
         if action == "tray":
             if self._tray is not None:
-                # v2.6.0: проверяем ЗДОРОВЬЕ трея: если значок не создался
-                # (поток погиб, система отказала) — пробуем создать заново.
-                # Иначе «свернуть в трей» оставит процесс БЕЗ окна и без значка.
+                # v2.6.0/v2.6.1: проверяем ЗДОРОВЬЕ трея (значок + ЖИВОЙ насос
+                # сообщений). Если трей не чинится — закрываем программу как
+                # обычно: пользователь не должен остаться с процессом без окна.
                 try:
                     healthy = self._tray.ensure_icon()
                 except Exception as exc:
@@ -428,8 +460,8 @@ class Api:
                     healthy = False
                 if healthy:
                     try:
-                        self._window.hide()
-                        self._visible = False
+                        self.win_force_hide()
+                        self.start_tray_safety_net()
                         if not getattr(self, "_tray_hint_shown", False):
                             self._tray_hint_shown = True
                             try:
@@ -450,6 +482,7 @@ class Api:
             else:
                 log.warn("close_action=tray, но трей недоступен — закрываю программу полностью")
         log.info("Закрытие приложения по кнопке ✕")
+        self._closing = True          # v2.6.1: страховка трея больше не нужна
         try:
             if self._tray:
                 self._tray.stop()
@@ -482,19 +515,79 @@ class Api:
     @safe_call
     def win_restore_from_tray(self):
         """Показать и восстановить окно (клик по иконке трея)."""
-        if os.name == "nt":
-            try:
-                import ctypes
-                hwnd = self._get_hwnd()
-                if hwnd:
-                    user32 = ctypes.windll.user32
-                    if user32.IsIconic(hwnd):
-                        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                    user32.SetForegroundWindow(hwnd)
-                    self._visible = True
-                    return {"ok": True, "via": "win32"}
-            except Exception as exc:
-                log.warn(f"Win32-восстановление не удалось: {exc}")
+        return self.win_force_show()
+
+    @safe_call
+    def win_hide_to_tray(self):
+        """Спрятать окно в трей (иконка остаётся в области уведомлений)."""
+        return self.win_force_hide()
+
+    @safe_call
+    def win_show(self):
+        """Показать окно (из трея)."""
+        return self.win_force_show()
+
+    # ------------------------------------------------------------------
+    # v2.6.1: надёжный показ/скрытие окна
+    # ------------------------------------------------------------------
+
+    def _win32_show_hide(self, show: bool) -> bool:
+        """
+        Показать/спрятать главное окно НАПРЯМУЮ через Win32.
+
+        Зачем: `window.show()/hide()` у pywebview — это синхронный `Invoke`
+        в GUI-поток WinForms. Вызванный из потока трея (или из потока захвата
+        экрана) он блокируется, если GUI-поток занят, и трей «замерзает»:
+        иконка видна, но клики не работают. `ShowWindow`/`SetForegroundWindow`
+        работают из любого потока и не ждут ответа.
+        :return: True, если окно реально обработано Win32.
+        """
+        if os.name != "nt":
+            return False
+        try:
+            import ctypes
+            from ctypes import wintypes
+            hwnd = self._get_hwnd()
+            if not hwnd:
+                return False
+            user32 = ctypes.windll.user32
+            user32.IsIconic.restype = wintypes.BOOL
+            user32.IsIconic.argtypes = [wintypes.HWND]
+            user32.IsWindowVisible.restype = wintypes.BOOL
+            user32.IsWindowVisible.argtypes = [wintypes.HWND]
+            user32.ShowWindow.restype = wintypes.BOOL
+            user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+            user32.SetForegroundWindow.restype = wintypes.BOOL
+            user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+            user32.BringWindowToTop.restype = wintypes.BOOL
+            user32.BringWindowToTop.argtypes = [wintypes.HWND]
+            SW_HIDE, SW_SHOWNORMAL, SW_RESTORE = 0, 1, 9
+            if show:
+                if user32.IsIconic(hwnd):
+                    user32.ShowWindow(hwnd, SW_RESTORE)
+                user32.ShowWindow(hwnd, SW_SHOWNORMAL)
+                user32.BringWindowToTop(hwnd)
+                user32.SetForegroundWindow(hwnd)
+            else:
+                user32.ShowWindow(hwnd, SW_HIDE)
+            return True
+        except Exception as exc:
+            log.warn(f"Win32-{'показ' if show else 'скрытие'} окна не удался: {exc}")
+            return False
+
+    def win_force_show(self) -> dict:
+        """
+        Гарантированно вернуть окно на экран (клик по иконке трея, повторный
+        запуск exe, возврат после снимка, страховка «мёртвого» трея).
+        Сначала Win32, и только если HWND неизвестен — pywebview.
+        """
+        if self._win32_show_hide(True):
+            self._visible = True
+            return {"ok": True, "via": "win32"}
+        try:
+            self._window.show()
+        except Exception as exc:
+            log.warn(f"pywebview show() не удался: {exc}")
         try:
             self._window.restore()
         except Exception:
@@ -502,25 +595,51 @@ class Api:
         self._visible = True
         return {"ok": True, "via": "pywebview"}
 
-    @safe_call
-    def win_hide_to_tray(self):
-        """Спрятать окно в трей (иконка остаётся в области уведомлений)."""
+    def win_force_hide(self) -> dict:
+        """Спрятать окно в трей (без блокирующего Invoke в GUI-поток)."""
+        if self._win32_show_hide(False):
+            self._visible = False
+            return {"ok": True, "via": "win32"}
         try:
             self._window.hide()
             self._visible = False
-            return {"ok": True}
+            return {"ok": True, "via": "pywebview"}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-    @safe_call
-    def win_show(self):
-        """Показать окно (из трея)."""
-        try:
-            self._window.show()
-            self._visible = True
-            return {"ok": True}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+    # ------------------------------------------------------------------
+    # v2.6.1: страховка — пользователь не остаётся без окна и без иконки
+    # ------------------------------------------------------------------
+
+    def start_tray_safety_net(self):
+        """Запускает фоновый контроль: окно спрятано, а трей не отвечает → вернуть окно."""
+        if self._net_started:
+            return
+        self._net_started = True
+        threading.Thread(target=self._tray_safety_net, daemon=True).start()
+
+    def _tray_safety_net(self):
+        bad = 0
+        while not self._closing:
+            time.sleep(3)
+            if self._closing:
+                return
+            try:
+                if self._tray is None:
+                    bad = 0
+                    continue
+                fn = getattr(self._tray, "healthy", None)
+                try:
+                    healthy = bool(fn()) if callable(fn) else bool(
+                        getattr(self._tray, "icon_shown", False))
+                except Exception:
+                    healthy = False
+                action, bad = safety_net_action(self._visible, healthy, bad)
+                if action == "show":
+                    log.warn("Окно спрятано, а трей не отвечает — возвращаю окно на экран")
+                    self.win_force_show()
+            except Exception as exc:
+                log.warn(f"Страховка трея: {exc}")
 
     # ------------------------------------------------------------------
     # Информация / настройки / языки
@@ -936,8 +1055,7 @@ class Api:
         if not self._visible:
             return False
         try:
-            self._window.hide()
-            self._visible = False
+            self.win_force_hide()
             time.sleep(0.25)
             return True
         except Exception as exc:
@@ -948,8 +1066,7 @@ class Api:
         if not hidden_by_us:
             return
         try:
-            self._window.show()
-            self._visible = True
+            self.win_force_show()
         except Exception as exc:
             log.warn(f"Не удалось показать окно после снимка: {exc}")
 
@@ -1302,7 +1419,10 @@ class Api:
                 return
             user32 = ctypes.windll.user32
             user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+            user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
             user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+            user32.SetWindowLongPtrW.argtypes = [
+                wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
             GWL_STYLE = -16
             WS_MAXIMIZEBOX = 0x00010000
             WS_MINIMIZEBOX = 0x00020000
