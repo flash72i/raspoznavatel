@@ -1414,6 +1414,7 @@ class Api:
             return
         try:
             import ctypes
+            from ctypes import wintypes   # v2.6.2: без него NameError (Windows-only ветка)
             hwnd = self._get_hwnd()
             if not hwnd:
                 return

@@ -157,6 +157,45 @@ cmd_doctor() {
     miss=1
   fi
 
+  # v2.6.2: статическая проверка имён — Windows-ветки (ctypes) на Linux не
+  # выполняются, и NameError в них уезжает прямо к владельцу (урок L48).
+  if ! python3 -c "import pyflakes" 2>/dev/null; then
+    log "  ставлю pyflakes для проверки имён…"
+    python3 -m pip install -q pyflakes >/dev/null 2>&1 || true
+  fi
+  if python3 -c "import pyflakes" 2>/dev/null; then
+    local undef
+    undef="$(cd "$PROJ" && python3 - "$PROJ" <<'PY'
+import ast, io, os, sys
+from pyflakes import checker
+root = sys.argv[1]
+files = ["api.py","main.py","tray.py","translator.py","config.py","ocr.py","log.py",
+         "proc.py","qr_reader.py","screen_capture.py","e2e_selfcheck.py",
+         "tools/download_resources.py","tests/test_logic.py","tests/tray_win_smoke.py"]
+bad = []
+for f in files:
+    p = os.path.join(root, f)
+    if not os.path.isfile(p):
+        continue
+    try:
+        tree = ast.parse(io.open(p, encoding="utf-8").read())
+    except SyntaxError as e:
+        bad.append("%s: SyntaxError %s" % (f, e)); continue
+    for m in checker.Checker(tree, p).messages:
+        if m.__class__.__name__ == "UndefinedName":
+            bad.append("%s:%d: %s" % (f, m.lineno, m.message % m.message_args))
+print("\n".join(bad))
+PY
+) || true"
+    if [[ -n "$undef" ]]; then
+      printf '%s\n' "$undef" | sed 's/^/    /'
+      die "pyflakes нашёл неопределённые имена (урок L48) — на Windows это NameError"
+    fi
+    log "  [ок] pyflakes: неопределённых имён нет"
+  else
+    log "  [!] pyflakes недоступен — пропускаю проверку имён (урок L48)"
+  fi
+
   log "  диск: свободно $(free_gb) ГБ (нужно ≥ ${MIN_FREE_GB})"
   need_disk
   log "  версия проекта: $VERSION (config.py)"

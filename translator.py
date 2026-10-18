@@ -31,6 +31,7 @@ import urllib.request
 import zipfile
 
 import config
+import log
 
 # ctranslate2/sentencepiece импортируются ЛЕНИВО в init_model() —
 # их импорт занимает секунды и не должен тормозить запуск программы.
@@ -260,6 +261,44 @@ def _find_model_file(src: str, tgt: str):
         m = _PAIR_RE.search(os.path.basename(path))
         if m and m.group(1).lower() == src and m.group(2).lower() == tgt:
             return path
+    return None
+
+
+# v2.6.2: автоопределение языка иногда даёт «соседний» язык (be/uk/kk вместо
+# ru — из-за одной буквы і или ў), модели для которого у пользователя нет.
+# Тогда переводим с ближайшего языка ТОЙ ЖЕ письменности, если модель есть:
+# лучше перевод ru→en, чем ошибка «Нет модели перевода be→en».
+_LANG_SCRIPT = {
+    "ru": "cyr", "uk": "cyr", "be": "cyr", "bg": "cyr", "sr": "cyr", "mk": "cyr",
+    "kk": "cyr", "ky": "cyr", "tg": "cyr", "mn": "cyr",
+    "en": "lat", "de": "lat", "fr": "lat", "es": "lat", "it": "lat", "pt": "lat",
+    "nl": "lat", "pl": "lat", "cs": "lat", "sk": "lat", "tr": "lat", "sv": "lat",
+    "no": "lat", "nb": "lat", "da": "lat", "fi": "lat", "ro": "lat", "hu": "lat",
+    "el": "el", "ar": "ar", "he": "he", "th": "th", "hi": "hi", "ka": "ka",
+    "hy": "hy", "zh": "cjk", "ja": "kana", "ko": "hangul",
+}
+_SCRIPT_FALLBACK = {"cyr": "ru", "lat": "en"}
+
+
+def fallback_language(detected, tgt, pairs):
+    """
+    Чистая функция: какой язык взять ВМЕСТО определённого, если для него нет
+    модели перевода (ни прямой, ни транзитом через английский).
+    :param detected: код языка, который определил detect_lang
+    :param tgt: язык, НА который переводим
+    :param pairs: список доступных направлений [(src, tgt), ...]
+    :return: код языка-замены или None (замены нет — оставляем как есть)
+    """
+    if not detected:
+        return None
+    cand = _SCRIPT_FALLBACK.get(_LANG_SCRIPT.get(detected, ""))
+    if not cand or cand == detected or cand == tgt:
+        return None
+    pairs = set(pairs or ())
+    if (cand, tgt) in pairs:
+        return cand
+    if (cand, "en") in pairs and ("en", tgt) in pairs:
+        return cand
     return None
 
 
@@ -600,6 +639,14 @@ def translate(text: str, src: str = "en", tgt: str = "ru", progress_cb=None) -> 
     if src == "auto":
         detected = detect_lang(text)
         src = detected or "en"
+        # v2.6.2: язык определился, но модели для него нет → берём ближайший
+        # язык той же письменности (иначе «Нет модели перевода be→en»)
+        if text and translation_path(src, tgt)[0] == "missing":
+            alt = fallback_language(src, tgt, available_pairs())
+            if alt:
+                log.info(f"Перевод: для «{src}» модели нет — перевожу как «{alt}» "
+                         f"(та же письменность)")
+                src = alt
     if not text:
         return {**{"translated": "", "ok": False, "error": "Пустой текст для перевода.",
                    "src": src, "tgt": tgt}, "via": None, "detected": detected}

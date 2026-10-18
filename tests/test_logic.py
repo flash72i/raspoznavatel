@@ -775,5 +775,68 @@ check("installer.nsi: OutFile и все поля версии = " + _ver,
 check("README: версия та же", f"**{_ver}**" in _rdm and f"Raspoznavatel-{_ver}-Setup.exe" in _rdm)
 check("config.py: APP_VERSION прочитан из файла", f'APP_VERSION = "{_ver}"' in _cfg)
 
+print("\n--- 24. v2.6.2: перевод с языка, модели для которого нет ---")
+import translator as tr_mod  # noqa: E402
+_pairs = [("en", "ru"), ("ru", "en")]
+check("fallback_language: «be» без модели → переводим как «ru»",
+      tr_mod.fallback_language("be", "en", _pairs) == "ru")
+check("fallback_language: «uk» → «ru»", tr_mod.fallback_language("uk", "en", _pairs) == "ru")
+check("fallback_language: «de» без модели → «en» (та же латиница)",
+      tr_mod.fallback_language("de", "ru", _pairs) == "en")
+check("fallback_language: «ru» (модель есть) → замены нет",
+      tr_mod.fallback_language("ru", "en", _pairs) is None)
+check("fallback_language: кандидат совпал с языком перевода → замены нет",
+      tr_mod.fallback_language("kk", "ru", _pairs) is None)
+check("fallback_language: иная письменность (zh) → замены нет",
+      tr_mod.fallback_language("zh", "en", _pairs) is None)
+check("fallback_language: пустой список моделей → замены нет",
+      tr_mod.fallback_language("be", "en", []) is None)
+
+# сквозная проверка: translate(auto) берёт запасной язык и переводит
+_orig = (tr_mod.detect_lang, tr_mod.available_pairs, tr_mod.init_model,
+         tr_mod._translate_direct)
+tr_mod.detect_lang = lambda t: "be"
+tr_mod.available_pairs = lambda: list(_pairs)
+tr_mod.init_model = lambda *a, **k: True
+tr_mod._translate_direct = lambda text, s, t, cb=None: "mother"
+try:
+    r = tr_mod.translate("мама", "auto", "en")
+    check("translate(auto): «be» без модели переведён как «ru» (без ошибки)",
+          r.get("ok") is True and r.get("src") == "ru" and r.get("detected") == "be"
+          and r.get("translated") == "mother", str(r)[:160])
+    tr_mod.detect_lang = lambda t: "ru"
+    r2 = tr_mod.translate("мама", "auto", "en")
+    check("translate(auto): «ru» с моделью идёт напрямую",
+          r2.get("ok") is True and r2.get("src") == "ru" and r2.get("detected") == "ru")
+finally:
+    (tr_mod.detect_lang, tr_mod.available_pairs, tr_mod.init_model,
+     tr_mod._translate_direct) = _orig
+
+print("\n--- 25. v2.6.2: неопределённых имён нет (Windows-ветки не падают у владельца) ---")
+_files = ["api.py", "main.py", "tray.py", "translator.py", "config.py", "ocr.py",
+          "log.py", "proc.py", "qr_reader.py", "screen_capture.py",
+          "e2e_selfcheck.py", "tools/download_resources.py",
+          "tests/test_logic.py", "tests/tray_win_smoke.py"]
+try:
+    import ast as _ast
+    from pyflakes import checker as _pfc
+    _bad = []
+    for _f in _files:
+        _p = os.path.join(_ROOT, _f)
+        if not os.path.isfile(_p):
+            continue
+        _tree = _ast.parse(io.open(_p, encoding="utf-8").read())
+        for _m in _pfc.Checker(_tree, _p).messages:
+            if _m.__class__.__name__ == "UndefinedName":
+                _bad.append("%s:%d %s" % (_f, _m.lineno, _m.message % _m.message_args))
+    check("pyflakes: неопределённых имён нет во всех модулях (урок L48)",
+          not _bad, "; ".join(_bad[:5]))
+except ImportError:
+    print("· pyflakes не установлен — проверка имён пропущена (есть в этапе doctor)")
+    PASS += 0
+_src_fix = _inspect.getsource(api_mod.Api._fix_window_styles)
+check("_fix_window_styles: wintypes импортирован в самой функции (Windows-only ветка)",
+      "from ctypes import wintypes" in _src_fix)
+
 print(f"\nИТОГ: {PASS} пройдено, {FAIL} провалено")
 sys.exit(0 if FAIL == 0 else 1)
