@@ -449,7 +449,7 @@ cmd_squash() {
   bad="$(grep -rInE "2\.[0-9]+\.[0-9]+" --include="*.md" --include="*.py" \
           --include="*.js" --include="*.html" --include="*.css" --include="*.nsi" \
           . 2>/dev/null | grep -v "\./tests/" | grep -v "release_assets/" \
-          | grep -v "$VERSION" || true)"
+          | grep -v "<path " | grep -v "$VERSION" || true)"   # <path d="..."> — это SVG, не версия
   if [[ -n "$bad" ]]; then
     printf '%s\n' "$bad" | head -5
     die "в файлах остались номера версий, кроме текущей ($VERSION) — убери их (L50, L52)"
