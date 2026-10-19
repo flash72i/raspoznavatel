@@ -157,7 +157,7 @@ cmd_doctor() {
     miss=1
   fi
 
-  # v2.6.2: статическая проверка имён — Windows-ветки (ctypes) на Linux не
+  # статическая проверка имён — Windows-ветки (ctypes) на Linux не
   # выполняются, и NameError в них уезжает прямо к владельцу (урок L48).
   python3 -c "import pyflakes" 2>/dev/null \
     || python3 -m pip install -q pyflakes >/dev/null 2>&1 || true
@@ -320,7 +320,7 @@ PY
 # Дымовой тест трея НА НАСТОЯЩЕМ Win32 (в Wine): значок создаётся в потоке
 # насоса, клики работают, зависший колбэк не глушит насос, watchdog перезапускает
 # «мёртвый» трей, повторный запуск exe открывает окно. Юнит-тесты на Linux этого
-# не видят — именно так v2.6.0 уехала к владельцу с нерабочей иконкой.
+# не видят — именно так одна из прошлых сборок уехала к владельцу с нерабочей иконкой.
 cmd_smoke() {
   say "smoke: дымовой тест трея в Wine (tests/tray_win_smoke.py)"
   cd "$PROJ" || die "нет папки проекта"
@@ -430,6 +430,52 @@ for p in sys.argv[1:]:
 PY
 }
 
+# ------------------------------------------------------------------ squash ---
+# ПОСТОЯННОЕ ПРАВИЛО ВЛАДЕЛЬЦА (2026-10-18, запомнить навсегда): на главной
+# странице репозитория не должно остаться НИ ОДНОГО упоминания старых версий —
+# ни в файлах, ни в сообщениях коммитов, которые GitHub показывает рядом с
+# файлами. Поэтому после публикации релиза история main сжимается в ОДИН
+# коммит, сообщение которого упоминает ТОЛЬКО текущую версию (L52).
+# Старая история не выбрасывается: уходит в ветку archive/history-pre-clean-<дата>.
+SQUASH_MSG_DEFAULT="«Распознаватель» $VERSION — портативная офлайн-программа для Windows: OCR текста с экрана и изображений (15 языков), QR и штрих-коды, скриншоты области, офлайн-перевод EN↔RU, история распознаваний, трей и автозапуск. Исходный код, интерфейс pywebview, тесты, сборка PyInstaller/NSIS, инструкция ИИ-агенту (INSTRUCTIONS.md)"
+
+cmd_squash() {
+  say "squash: один чистый коммит в main (только текущая версия $VERSION)"
+  cd "$PROJ" || die "нет папки проекта"
+  git fetch -q origin main || true
+  [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] \
+    || die "локальный main расходится с origin/main — сначала запушь всё"
+  local bad
+  bad="$(grep -rInE "2\.[0-9]+\.[0-9]+" --include="*.md" --include="*.py" \
+          --include="*.js" --include="*.html" --include="*.css" --include="*.nsi" \
+          . 2>/dev/null | grep -v "\./tests/" | grep -v "release_assets/" \
+          | grep -v "$VERSION" || true)"
+  if [[ -n "$bad" ]]; then
+    printf '%s\n' "$bad" | head -5
+    die "в файлах остались номера версий, кроме текущей ($VERSION) — убери их (L50, L52)"
+  fi
+  log "  [ок] в файлах нет номеров версий, кроме текущей ($VERSION)"
+  local root n
+  root="$(git rev-list --max-parents=0 HEAD | tail -1)"
+  n="$(git rev-list --count HEAD)"
+  if [[ "$n" == "1" ]]; then
+    log "в main уже один коммит — сжимать нечего"
+  else
+    local archive="archive/history-pre-clean-$(date +%Y%m%d-%H%M%S)"
+    git branch -f "$archive" HEAD >/dev/null
+    git push -q -f origin "$archive" || log "[!] архивная ветка не запушена"
+    log "старая история ($n коммитов) сохранена в $archive"
+    git reset --soft "$root"
+    git commit -q --amend -m "${SQUASH_MSG:-$SQUASH_MSG_DEFAULT}"
+    log "main сжат до одного коммита: $(git log --oneline -1 | head -c 90)"
+  fi
+  git push -q --force origin main || die "force-push main не прошёл"
+  # тег релиза обязан стоять на единственном коммите main
+  git tag -f -a "v$VERSION" -m "Распознаватель $VERSION" HEAD >/dev/null
+  git push -q -f origin "refs/tags/v$VERSION" || log "[!] тег не обновлён"
+  log "готово: main = 1 коммит, тег v$VERSION на нём, старые версии не упомянуты"
+}
+
 # ------------------------------------------------------------------- clean ---
 cmd_clean() {
   say "clean: убираю временные гигабайты"
@@ -453,7 +499,7 @@ build_release_wine.sh — пересборка релиза «Распознав
 Ассеты:   $RELEASE_DIR
 Версия:   $VERSION
 
-Этапы: doctor | env | build | check | smoke | package | verify | all | clean
+Этапы: doctor | env | build | check | smoke | package | verify | squash | all | clean
 USAGE
 }
 
@@ -478,6 +524,7 @@ case "${1:-all}" in
   smoke)   cmd_smoke ;;
   verify)  cmd_verify ;;
   clean)   cmd_clean ;;
+  squash)  cmd_squash ;;
   all)     cmd_all ;;
   -h|--help|help) usage ;;
   *)       usage; die "неизвестный этап: $1" ;;

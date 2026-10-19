@@ -524,7 +524,7 @@ body { display: flex; flex-direction: column; }
   box-shadow: 0 0 10px rgba(34,211,238,.18); }
 .set-select option { background: #0c1226; color: #dbe4ff; }
 
-/* ================= v2.5.0 — ИСТОРИЯ, ПАКЕТЫ ПЕРЕВОДА ================= */
+/* ================= ИСТОРИЯ, ПАКЕТЫ ПЕРЕВОДА ================= */
 
 /* Кнопка «История» (бирюзовая, в одном семействе с остальными btn3d) */
 .btn-teal { background: linear-gradient(180deg, #7ff0d4 0%, #14b8a6 55%, #0f766e 100%);
