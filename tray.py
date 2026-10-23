@@ -5,20 +5,26 @@ tray.py — иконка в системном трее Windows (чистый ct
 Нужна для режима автозапуска: программа стартует вместе с Windows
 в свёрнутом виде и живёт в трее.
 
-v2.5.0 — ИСПРАВЛЕНИЕ «белого невидимого меню»:
-  Системное всплывающее меню (CreatePopupMenu + TrackPopupMenu) на части
-  систем Windows 10/11 отрисовывалось БЕЛЫМ фоном с невидимыми светлыми
-  надписями («Показать окно», «Выход» прочитать было невозможно) — тема
-  оформления меню наследовалась от общесистемных настроек, которые у
-  скрытого окна трея применялись некорректно.
-  Теперь меню рисуется ВЛАДЕЛЬЦЕМ (MF_OWNERDRAW + WM_MEASUREITEM/
-  WM_DRAWITEM): цвета задаёт сама программа — тёмный фон в стиле
-  интерфейса приложения и контрастный светлый текст с подсветкой пункта
-  под курсором. Видимость больше не зависит от темы Windows.
-
 Поведение кнопок мыши:
   • левый клик  — показать окно, а если оно уже открыто — скрыть в трей;
   • правый клик — меню «Показать/Скрыть окно», «Выход».
+
+v2.6.0 — ОКОНЧАТЕЛЬНОЕ ИСПРАВЛЕНИЕ «белого невидимого меню».
+  В v2.5.0 меню уже рисовалось владельцем (MF_OWNERDRAW), но на 64-битной
+  Windows прототип оконной процедуры объявлял WPARAM/LPARAM как 32-битные
+  типы, а LRESULT как c_long: указатель в LPARAM обрезался до 32 бит,
+  обработчики WM_MEASUREITEM/WM_DRAWITEM получали мусор и не выполнялись.
+  Результат — белое системное меню с ПУСТЫМИ пунктами (надписей не видно).
+  Теперь:
+  * прототипы сообщений 64-битно-корректны (WPARAM=UINT_PTR, LPARAM=LONG_PTR,
+    LRESULT=LONG_PTR) на любой платформе;
+  * у всех вызовов GDI/User32 явно заданы argtypes/restype — дескрипторы
+    (кисть, перо, шрифт) не «обрезаются» на x64;
+  * отрисовка пунктов обёрнута в try/except: если самоотрисовка когда-либо
+    не смогла выполниться, программа АВТОМАТИЧЕСКИ переключается на обычное
+    системное меню (MF_STRING) — надписи будут читаемы в любой теме Windows;
+  * цвета пунктов задаёт сама программа (тёмный фон в стиле интерфейса,
+    контрастный светлый текст) — видимость не зависит от темы системы.
 """
 
 import ctypes
@@ -37,6 +43,8 @@ WM_COMMAND = 0x0111
 WM_MEASUREITEM = 0x002C
 WM_DRAWITEM = 0x002B
 WM_NULL = 0x0000
+WM_CLOSE = 0x0010
+WM_QUIT = 0x0012
 NIM_ADD = 0
 NIM_DELETE = 2
 NIF_MESSAGE = 0x01
@@ -51,6 +59,7 @@ TPM_BOTTOMALIGN = 0x20
 TPM_LEFTALIGN = 0x0
 
 # --- флаги меню ---
+MF_STRING = 0x0000        # обычный пункт, рисуется системой (фолбэк)
 MF_SEPARATOR = 0x0800
 MF_OWNERDRAW = 0x1000
 
@@ -63,6 +72,20 @@ MENU_ITEM_H = 32                     # высота пункта, px
 MENU_SEP_H = 9                       # высота разделителя, px
 MENU_W = 210                         # ширина меню, px
 MENU_FONT = "Segoe UI"
+
+# --- 64-битно-корректные типы сообщений (x86 и x64) ---
+# UINT_PTR / LONG_PTR: на x64 это 64 бита, на x86 — 32; c_size_t/c_ssize_t
+# дают ровно это на каждой платформе (в отличие от wintypes.WPARAM/LPARAM,
+# которые на x64 ошибочно 32-битные — этим и болело v2.5.0).
+WPARAM_T = ctypes.c_size_t    # UINT_PTR
+LPARAM_T = ctypes.c_ssize_t   # LONG_PTR
+LRESULT_T = ctypes.c_ssize_t  # LONG_PTR
+
+ODS_SELECTED = 0x0001
+DT_VCENTER = 0x0004
+DT_SINGLELINE = 0x0020
+TRANSPARENT = 1
+PS_SOLID = 0
 
 
 def _rgb(r, g, b):
@@ -100,8 +123,8 @@ class DRAWITEMSTRUCT(ctypes.Structure):
         ("itemID", wintypes.UINT),
         ("itemAction", wintypes.UINT),
         ("itemState", wintypes.UINT),
-        ("hwndItem", wintypes.HWND),
-        ("hDC", wintypes.HDC),
+        ("hwndItem", ctypes.c_void_p),
+        ("hDC", ctypes.c_void_p),
         ("rcItem", wintypes.RECT),
         ("itemData", ctypes.c_void_p),
     ]
@@ -121,10 +144,9 @@ class NOTIFYICONDATAW(ctypes.Structure):
 
 # Win32-типы существуют только в Windows; на других ОС модуль всё равно
 # импортируется (для юнит-тестов чистых функций), но трей не стартует.
-if os.name == "nt":
+if os.name == "nt":  # pragma: no cover
     WNDPROC = ctypes.WINFUNCTYPE(
-        ctypes.c_long, wintypes.HWND, wintypes.UINT,
-        wintypes.WPARAM, wintypes.LPARAM
+        LRESULT_T, wintypes.HWND, wintypes.UINT, WPARAM_T, LPARAM_T
     )
 
     class WNDCLASSW(ctypes.Structure):
@@ -140,6 +162,67 @@ if os.name == "nt":
             ("lpszMenuName", wintypes.LPCWSTR),
             ("lpszClassName", wintypes.LPCWSTR),
         ]
+
+    def _setup_prototypes():
+        """Явные argtypes/restype: дескрипторы и указатели не обрезаются на x64."""
+        u = ctypes.windll.user32
+        g = ctypes.windll.gdi32
+        sh = ctypes.windll.shell32
+
+        u.DefWindowProcW.restype = LRESULT_T
+        u.DefWindowProcW.argtypes = [
+            wintypes.HWND, wintypes.UINT, WPARAM_T, LPARAM_T]
+        u.CreatePopupMenu.restype = wintypes.HMENU
+        u.AppendMenuW.restype = wintypes.BOOL
+        u.AppendMenuW.argtypes = [
+            wintypes.HMENU, wintypes.UINT, WPARAM_T, wintypes.LPCWSTR]
+        u.TrackPopupMenu.restype = wintypes.BOOL
+        u.SetForegroundWindow.restype = wintypes.BOOL
+        u.SetForegroundWindow.argtypes = [wintypes.HWND]
+        u.PostMessageW.restype = wintypes.BOOL
+        u.PostMessageW.argtypes = [
+            wintypes.HWND, wintypes.UINT, WPARAM_T, LPARAM_T]
+        u.DestroyMenu.restype = wintypes.BOOL
+        u.DestroyMenu.argtypes = [wintypes.HMENU]
+        u.GetCursorPos.restype = wintypes.BOOL
+        u.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+        u.DrawTextW.restype = ctypes.c_int
+        u.DrawTextW.argtypes = [
+            wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int,
+            ctypes.POINTER(wintypes.RECT), wintypes.UINT]
+        u.LoadImageW.restype = wintypes.HICON
+        u.LoadIconW.restype = wintypes.HICON
+        u.RegisterClassW.restype = wintypes.BOOL
+        u.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
+        u.CreateWindowExW.restype = wintypes.HWND
+        u.GetMessageW.restype = wintypes.BOOL
+        u.GetMessageW.argtypes = [
+            ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+            wintypes.UINT, wintypes.UINT]
+
+        g.CreateSolidBrush.restype = wintypes.HBRUSH
+        g.CreateSolidBrush.argtypes = [wintypes.COLORREF]
+        g.CreatePen.restype = wintypes.HPEN
+        g.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, wintypes.COLORREF]
+        g.CreateFontW.restype = wintypes.HFONT
+        g.SelectObject.restype = wintypes.HGDIOBJ
+        g.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+        g.DeleteObject.restype = wintypes.BOOL
+        g.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        g.FillRect.restype = ctypes.c_int
+        g.FillRect.argtypes = [
+            wintypes.HDC, ctypes.POINTER(wintypes.RECT), wintypes.HBRUSH]
+        g.SetBkMode.restype = ctypes.c_int
+        g.SetBkMode.argtypes = [wintypes.HDC, ctypes.c_int]
+        g.SetTextColor.restype = wintypes.COLORREF
+        g.SetTextColor.argtypes = [wintypes.HDC, wintypes.COLORREF]
+        g.MoveToEx.restype = wintypes.BOOL
+        g.MoveToEx.argtypes = [
+            wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+        g.LineTo.restype = wintypes.BOOL
+        g.LineTo.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+
+        sh.Shell_NotifyIconW.restype = wintypes.BOOL
 else:  # pragma: no cover
     WNDPROC = None
     WNDCLASSW = None
@@ -160,6 +243,9 @@ class TrayIcon:
         self._nid = None
         self._running = False
         self._hfont = None
+        # самоотрисовка включена; если WM_DRAWITEM хоть раз не сможет
+        # отработать — навсегда переключимся на системное меню (MF_STRING)
+        self._ownerdraw_failed = False
 
     # --- Win32-обвязка ---
     def _wnd_proc(self, hwnd, msg, wparam, lparam):
@@ -182,17 +268,30 @@ class TrayIcon:
                     pass
             return 0
         if msg == WM_MEASUREITEM:
-            mis = ctypes.cast(lparam, ctypes.POINTER(MEASUREITEMSTRUCT)).contents
-            mis.itemWidth = MENU_W
-            mis.itemHeight = MENU_SEP_H if mis.itemID == 0 else MENU_ITEM_H
-            # itemID == 0 не используется (идентификаторы пунктов >= IDM_TOGGLE);
-            # разделитель имеет id 0 только если добавлен с wID=0 — у нас так и есть
+            try:
+                mis = ctypes.cast(
+                    ctypes.c_void_p(lparam),
+                    ctypes.POINTER(MEASUREITEMSTRUCT)).contents
+                mis.itemWidth = MENU_W
+                mis.itemHeight = (
+                    MENU_SEP_H if mis.itemID == 0 else MENU_ITEM_H)
+            except Exception as exc:  # pragma: no cover
+                log.error(f"Трей: сбой WM_MEASUREITEM: {exc}")
+                return 0
             return 1
         if msg == WM_DRAWITEM:
-            dis = ctypes.cast(lparam, ctypes.POINTER(DRAWITEMSTRUCT)).contents
-            self._draw_item(dis)
+            try:
+                dis = ctypes.cast(
+                    ctypes.c_void_p(lparam),
+                    ctypes.POINTER(DRAWITEMSTRUCT)).contents
+                self._draw_item(dis)
+            except Exception as exc:
+                # самоотрисовка не смогла выполниться — дальше рисуем
+                # обычным системным меню: надписи обязаны быть читаемы
+                self._ownerdraw_failed = True
+                log.error(f"Трей: самоотрисовка отключена ({exc})")
             return 1
-        if msg == 0x0010:  # WM_CLOSE
+        if msg == WM_CLOSE:
             return 0
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
@@ -214,7 +313,7 @@ class TrayIcon:
         user32 = ctypes.windll.user32
         dc = dis.hDC
         rc = dis.rcItem
-        hilight = bool(dis.itemState & 0x0001)      # ODS_SELECTED
+        hilight = bool(dis.itemState & ODS_SELECTED)
         items = menu_items(bool(self.is_visible()))
         label = ""
         # разделители добавлены с wID=0; пункты — с IDM_TOGGLE / IDM_EXIT
@@ -224,15 +323,15 @@ class TrayIcon:
                 if iid == dis.itemID:
                     label = text or ""
                     break
+        rect = wintypes.RECT(rc.left, rc.top, rc.right, rc.bottom)
         if is_sep:
             brush = gdi32.CreateSolidBrush(_rgb(*MENU_BG))
             old = gdi32.SelectObject(dc, brush)
-            rect = wintypes.RECT(rc.left, rc.top, rc.right, rc.bottom)
             gdi32.FillRect(dc, ctypes.byref(rect), brush)
             gdi32.SelectObject(dc, old)
             gdi32.DeleteObject(brush)
             # линия разделителя по центру
-            pen = gdi32.CreatePen(0, 1, _rgb(0x4A, 0x50, 0x5E))
+            pen = gdi32.CreatePen(PS_SOLID, 1, _rgb(0x4A, 0x50, 0x5E))
             oldpen = gdi32.SelectObject(dc, pen)
             y = (rc.top + rc.bottom) // 2
             gdi32.MoveToEx(dc, rc.left + 8, y, None)
@@ -245,7 +344,6 @@ class TrayIcon:
         fg = MENU_TEXT_HILITE if hilight else MENU_TEXT
         brush = gdi32.CreateSolidBrush(_rgb(*bg))
         old = gdi32.SelectObject(dc, brush)
-        rect = wintypes.RECT(rc.left, rc.top, rc.right, rc.bottom)
         gdi32.FillRect(dc, ctypes.byref(rect), brush)
         gdi32.SelectObject(dc, old)
         gdi32.DeleteObject(brush)
@@ -254,21 +352,25 @@ class TrayIcon:
             self._hfont = gdi32.CreateFontW(
                 -16, 0, 0, 0, 400, 0, 0, 0, 204, 0, 0, 5, 0, MENU_FONT)
         oldfont = gdi32.SelectObject(dc, self._hfont)
-        gdi32.SetBkMode(dc, 1)   # TRANSPARENT
+        gdi32.SetBkMode(dc, TRANSPARENT)
         gdi32.SetTextColor(dc, _rgb(*fg))
         text_rc = wintypes.RECT(rc.left + 14, rc.top, rc.right - 8, rc.bottom)
-        # DT_LEFT (0x0000) | DT_VCENTER (0x0004) | DT_SINGLELINE (0x0020)
-        user32.DrawTextW(dc, label, -1, ctypes.byref(text_rc), 0x0024)
+        user32.DrawTextW(dc, label, -1, ctypes.byref(text_rc),
+                         DT_VCENTER | DT_SINGLELINE)
         gdi32.SelectObject(dc, oldfont)
 
     def _show_menu(self, hwnd):
         user32 = ctypes.windll.user32
         menu = user32.CreatePopupMenu()
+        ownerdraw = not self._ownerdraw_failed
         for iid, text in menu_items(bool(self.is_visible())):
             if iid == "sep":
                 user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
-            else:
+            elif ownerdraw:
                 user32.AppendMenuW(menu, MF_OWNERDRAW, iid, text)
+            else:
+                # фолбэк: пункт рисует система — читаемо в любой теме
+                user32.AppendMenuW(menu, MF_STRING, iid, text)
         pt = wintypes.POINT()
         user32.GetCursorPos(ctypes.byref(pt))
         user32.SetForegroundWindow(hwnd)
@@ -321,7 +423,7 @@ class TrayIcon:
         self._remove_icon()
         try:
             if self._hwnd:
-                ctypes.windll.user32.PostMessageW(self._hwnd, 0x0012, 0, 0)  # WM_QUIT
+                ctypes.windll.user32.PostMessageW(self._hwnd, WM_QUIT, 0, 0)
         except Exception:
             pass
 
@@ -329,6 +431,7 @@ class TrayIcon:
         try:
             user32 = ctypes.windll.user32
             kernel32 = ctypes.windll.kernel32
+            _setup_prototypes()
             hinst = kernel32.GetModuleHandleW(None)
 
             self._proc = WNDPROC(self._wnd_proc)   # держим ссылку от сборщика мусора
