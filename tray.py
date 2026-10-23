@@ -24,12 +24,18 @@ v2.6.0 — ОКОНЧАТЕЛЬНОЕ ИСПРАВЛЕНИЕ «белого не
     не смогла выполниться, программа АВТОМАТИЧЕСКИ переключается на обычное
     системное меню (MF_STRING) — надписи будут читаемы в любой теме Windows;
   * цвета пунктов задаёт сама программа (тёмный фон в стиле интерфейса,
-    контрастный светлый текст) — видимость не зависит от темы системы.
+    контрастный светлый текст) — видимость не зависит от темы системы;
+  * «здоровье» трея проверяется явно (icon_shown / ensure_icon): если поток
+    трея или значок погибли, программа пробует создать значок снова, а режим
+    «свернуть в трей» не оставляет пользователя с процессом без окна;
+  * при первом сворачивании в трей показывается всплывающая подсказка:
+    новый значок Windows по умолчанию прячет под стрелку «^» у часов.
 """
 
 import ctypes
 import os
 import threading
+import time
 from ctypes import wintypes
 
 import config
@@ -46,10 +52,13 @@ WM_NULL = 0x0000
 WM_CLOSE = 0x0010
 WM_QUIT = 0x0012
 NIM_ADD = 0
+NIM_MODIFY = 1
 NIM_DELETE = 2
 NIF_MESSAGE = 0x01
 NIF_ICON = 0x02
 NIF_TIP = 0x04
+NIF_INFO = 0x10          # всплывающая подсказка (balloon) у значка
+NIIF_INFO = 0x02         # обычная информационная подсказка
 IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x10
 LR_DEFAULTSIZE = 0x40
@@ -139,6 +148,13 @@ class NOTIFYICONDATAW(ctypes.Structure):
         ("uCallbackMessage", wintypes.UINT),
         ("hIcon", wintypes.HICON),
         ("szTip", ctypes.c_wchar * 128),
+        # --- поля всплывающей подсказки (NIF_INFO) ---
+        ("dwState", wintypes.DWORD),
+        ("dwStateMask", wintypes.DWORD),
+        ("szInfo", ctypes.c_wchar * 256),
+        ("uTimeout", wintypes.UINT),
+        ("szInfoTitle", ctypes.c_wchar * 64),
+        ("dwInfoFlags", wintypes.DWORD),
     ]
 
 
@@ -223,6 +239,10 @@ if os.name == "nt":  # pragma: no cover
         g.LineTo.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
 
         sh.Shell_NotifyIconW.restype = wintypes.BOOL
+
+        k = ctypes.windll.kernel32
+        k.GetModuleHandleW.restype = ctypes.c_void_p   # HMODULE: 64 бита!
+        k.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
 else:  # pragma: no cover
     WNDPROC = None
     WNDCLASSW = None
@@ -243,6 +263,8 @@ class TrayIcon:
         self._nid = None
         self._running = False
         self._hfont = None
+        # значок РЕАЛЬНО создан в трее (Shell_NotifyIcon вернул успех)
+        self.icon_shown = False
         # самоотрисовка включена; если WM_DRAWITEM хоть раз не сможет
         # отработать — навсегда переключимся на системное меню (MF_STRING)
         self._ownerdraw_failed = False
@@ -404,6 +426,92 @@ class TrayIcon:
                     NIM_DELETE, ctypes.byref(self._nid))
         except Exception:
             pass
+        self.icon_shown = False
+
+    # --- v2.6.0: пошаговое создание трея с проверками и повторами ---
+    def _ensure_window(self):
+        """Скрытое окно-владелец трея; создаётся один раз, с повтором."""
+        if self._hwnd:
+            return True
+        user32 = ctypes.windll.user32
+        hinst = ctypes.windll.kernel32.GetModuleHandleW(None)
+        self._proc = WNDPROC(self._wnd_proc)  # ссылка от сборщика мусора
+        wc = WNDCLASSW()
+        wc.style = 0
+        wc.lpfnWndProc = self._proc
+        wc.hInstance = hinst
+        wc.lpszClassName = "RaspoznavatelTrayClass"
+        user32.RegisterClassW(ctypes.byref(wc))  # False = класс уже есть
+        for attempt in (1, 2):
+            self._hwnd = user32.CreateWindowExW(
+                0, wc.lpszClassName, "RaspoznavatelTray",
+                0, 0, 0, 0, 0, None, None, hinst, None)
+            if self._hwnd:
+                return True
+            log.warn(f"Трей: не удалось создать скрытое окно (попытка {attempt})")
+            time.sleep(0.2)
+        log.error("Трей: скрытое окно не создалось — значка не будет")
+        return False
+
+    def _add_icon(self):
+        """Регистрация значка в трее; возврат — значок РЕАЛЬНО создан."""
+        if not self._ensure_window():
+            return False
+        self._nid = NOTIFYICONDATAW()
+        self._nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+        self._nid.hWnd = self._hwnd
+        self._nid.uID = 1
+        self._nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+        self._nid.uCallbackMessage = WM_TRAYICON
+        self._nid.hIcon = self._load_icon()
+        self._nid.szTip = self.tooltip[:127]
+        for attempt in (1, 2):
+            if ctypes.windll.shell32.Shell_NotifyIconW(
+                    NIM_ADD, ctypes.byref(self._nid)):
+                self.icon_shown = True
+                log.ok("Иконка в системном трее создана")
+                return True
+            log.warn(f"Трей: Shell_NotifyIcon отказал (попытка {attempt})")
+            time.sleep(0.2)
+        log.error("Трей: значок в системном трее не создался")
+        return False
+
+    def ensure_icon(self, timeout=1.5):
+        """
+        Здоровье трея: True, если значок реально есть в трее.
+        Если значок пропал или поток трея погиб — пробует создать заново
+        (иначе «свернуть в трей» оставит пользователя с процессом без окна).
+        """
+        if self.icon_shown:
+            return True
+        if os.name != "nt":
+            return False
+        if not self._running or (
+                self._thread is not None and not self._thread.is_alive()):
+            self._running = False
+            self.start()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.icon_shown:
+                return True
+            self._add_icon()
+            if self.icon_shown:
+                return True
+            time.sleep(0.2)
+        return self.icon_shown
+
+    def notify(self, title, text, timeout_ms=10000):
+        """Всплывающая подсказка у значка трея (balloon, NIF_INFO)."""
+        if not (self.icon_shown and self._nid):
+            return False
+        nid = self._nid
+        nid.uFlags = NIF_INFO
+        nid.szInfo = text[:255]
+        nid.szInfoTitle = title[:63]
+        nid.dwInfoFlags = NIIF_INFO
+        nid.uTimeout = timeout_ms
+        return bool(ctypes.windll.shell32.Shell_NotifyIconW(
+            NIM_MODIFY, ctypes.byref(nid)))
 
     # --- публичное API ---
     def start(self):
@@ -430,38 +538,9 @@ class TrayIcon:
     def _run(self):
         try:
             user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
             _setup_prototypes()
-            hinst = kernel32.GetModuleHandleW(None)
-
-            self._proc = WNDPROC(self._wnd_proc)   # держим ссылку от сборщика мусора
-            wc = WNDCLASSW()
-            wc.style = 0
-            wc.lpfnWndProc = self._proc
-            wc.hInstance = hinst
-            wc.lpszClassName = "RaspoznavatelTrayClass"
-            user32.RegisterClassW(ctypes.byref(wc))
-
-            self._hwnd = user32.CreateWindowExW(
-                0, wc.lpszClassName, "RaspoznavatelTray",
-                0, 0, 0, 0, 0, None, None, hinst, None)
-            if not self._hwnd:
-                log.error("Трей: не удалось создать скрытое окно")
+            if not self._add_icon():
                 return
-
-            self._nid = NOTIFYICONDATAW()
-            self._nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
-            self._nid.hWnd = self._hwnd
-            self._nid.uID = 1
-            self._nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
-            self._nid.uCallbackMessage = WM_TRAYICON
-            self._nid.hIcon = self._load_icon()
-            self._nid.szTip = self.tooltip[:127]
-            if not ctypes.windll.shell32.Shell_NotifyIconW(
-                    NIM_ADD, ctypes.byref(self._nid)):
-                log.error("Трей: Shell_NotifyIcon отказал")
-                return
-            log.ok("Иконка в системном трее создана")
 
             msg = wintypes.MSG()
             while self._running:
